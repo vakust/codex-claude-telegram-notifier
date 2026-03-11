@@ -5,6 +5,8 @@ param(
 )
 
 $ErrorActionPreference = "Continue"
+[Console]::InputEncoding  = [System.Text.Encoding]::UTF8
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
 function Write-HookLog([string]$msg) {
   try {
@@ -42,7 +44,14 @@ if (-not [string]::IsNullOrWhiteSpace($stdinText)) {
   try {
     $hookData = $stdinText | ConvertFrom-Json
     $sessionId = [string]$hookData.session_id
-    Write-HookLog "Hook received session=$sessionId event=$($hookData.hook_event_name)"
+    $eventName = [string]$hookData.hook_event_name
+    Write-HookLog "Hook received session=$sessionId event=$eventName"
+
+    # Only process Stop events - ignore Notification, PreToolUse, PostToolUse, etc.
+    if ($eventName -ne 'Stop') {
+      Write-HookLog "Ignoring non-Stop event: $eventName"
+      exit 0
+    }
 
     # Extract last assistant text from transcript
     if ($hookData.transcript -and $hookData.transcript.Count -gt 0) {

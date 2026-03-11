@@ -627,7 +627,7 @@ function Get-LatestCCFinalAssistant {
           $obj = $line | ConvertFrom-Json
           if ([string]$obj.type -ne 'assistant') { continue }
           $sr = [string]$obj.message.stop_reason
-          if ($sr -ne 'end_turn' -and $sr -ne 'tool_use' -and $sr -ne 'max_tokens') { continue }
+          if ($sr -ne 'end_turn' -and $sr -ne 'max_tokens') { continue }
           $ts = [DateTime]::Parse([string]$obj.timestamp).ToUniversalTime()
           $msgId = [string]$obj.message.id
           $text = ($obj.message.content | Where-Object { $_.type -eq 'text' } |
@@ -682,7 +682,11 @@ function Check-CcCompletionWatcher {
 
   if ($latest.key -eq $script:ccLastCompletionKey) { return }
 
+  # Commit key FIRST to prevent duplicate sends on second watcher call
+  $script:ccLastCompletionKey = $latest.key
+  Save-CcCompletionWatchState
   Write-CtrlLog "CC new completion key=$($latest.key)"
+
   $completionText = [string]$latest.text
   if ([string]::IsNullOrWhiteSpace($completionText)) { $completionText = "(text unavailable)" }
 
@@ -690,11 +694,9 @@ function Check-CcCompletionWatcher {
   $ok2 = Send-TgChunked -prefix "[CC] Last text:" -text $completionText
 
   if ($ok1 -and $ok2) {
-    $script:ccLastCompletionKey = $latest.key
-    Save-CcCompletionWatchState
     Write-CtrlLog "CC notification sent; key=$($latest.key)"
   } else {
-    Write-CtrlLog "CC notification send failed; will retry key=$($latest.key)"
+    Write-CtrlLog "CC notification send failed (key already committed)"
   }
 }
 
@@ -739,12 +741,6 @@ while ($true) {
   } catch {
     Write-CtrlLog "Watcher error (pre-poll): $($_.Exception.Message)"
   }
-  try {
-    Check-CcCompletionWatcher
-  } catch {
-    Write-CtrlLog "CC Watcher error (pre-poll): $($_.Exception.Message)"
-  }
-
   try {
     $res = Get-Updates -offset $offset
     if ($res.ok -and $res.result.Count -gt 0) {
@@ -889,11 +885,6 @@ while ($true) {
     Check-CompletionWatcher
   } catch {
     Write-CtrlLog "Watcher error (post-poll): $($_.Exception.Message)"
-  }
-  try {
-    Check-CcCompletionWatcher
-  } catch {
-    Write-CtrlLog "CC Watcher error (post-poll): $($_.Exception.Message)"
   }
   Start-Sleep -Seconds $PollSeconds
 }
