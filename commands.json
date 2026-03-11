@@ -1,0 +1,23 @@
+﻿{
+  "codex_continue": {
+    "task_name": "Codex | Continue current thread",
+    "command": "& 'c:\\001_dev\\notifier\\scripts\\codex-continue.ps1'",
+    "log_path": "c:\\001_dev\\notifier\\logs\\codex-continue.log",
+    "timeout_minutes": 180,
+    "heartbeat_minutes": 2
+  },
+  "codex_retest": {
+    "task_name": "Codex | Retest current thread",
+    "command": "& 'c:\\001_dev\\notifier\\scripts\\codex-retest.ps1'",
+    "log_path": "c:\\001_dev\\notifier\\logs\\codex-retest.log",
+    "timeout_minutes": 120,
+    "heartbeat_minutes": 2
+  },
+  "codex_fixandtest": {
+    "task_name": "Codex | Fix and test current thread",
+    "command": "& 'c:\\001_dev\\notifier\\scripts\\codex-fixandtest.ps1'",
+    "log_path": "c:\\001_dev\\notifier\\logs\\codex-fixandtest.log",
+    "timeout_minutes": 240,
+    "heartbeat_minutes": 2
+  }
+}

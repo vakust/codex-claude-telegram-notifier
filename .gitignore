@@ -1,0 +1,6 @@
+.env.ps1
+state/
+logs/
+dist/
+*.pid
+*.log
