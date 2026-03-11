@@ -643,7 +643,12 @@ function Get-LatestCCFinalAssistant {
   return $null
 }
 
+$script:ccPendingKey = ""
+$script:ccPendingAt  = [DateTime]::MinValue
+
 function Load-CcCompletionWatchState {
+  $script:ccPendingKey = ""
+  $script:ccPendingAt  = [DateTime]::MinValue
   if (Test-Path $ccCompletionWatchPath) {
     try {
       $s = Get-Content $ccCompletionWatchPath -Raw | ConvertFrom-Json
@@ -664,6 +669,8 @@ function Save-CcCompletionWatchState {
   } | ConvertTo-Json | Set-Content -Path $ccCompletionWatchPath -Encoding UTF8
 }
 
+$CcDebounceSec = 4   # wait this long after end_turn before notifying (skips intermediate tool steps)
+
 function Check-CcCompletionWatcher {
   $now = Get-Date
   if (($now - $script:ccLastCompletionCheck).TotalSeconds -lt $CompletionPollSec) { return }
@@ -672,20 +679,38 @@ function Check-CcCompletionWatcher {
   $latest = Get-LatestCCFinalAssistant
   if ($null -eq $latest) { return }
 
+  # First run: just record current key, don't notify
   if (-not $script:ccWatchInitialized) {
     $script:ccWatchInitialized = $true
     $script:ccLastCompletionKey = $latest.key
+    $script:ccPendingKey = ""
     Save-CcCompletionWatchState
     Write-CtrlLog "CC watcher initialized key=$($latest.key)"
     return
   }
 
-  if ($latest.key -eq $script:ccLastCompletionKey) { return }
+  # No change from last confirmed notification
+  if ($latest.key -eq $script:ccLastCompletionKey) {
+    $script:ccPendingKey = ""   # reset pending if it was stale
+    return
+  }
 
-  # Commit key FIRST to prevent duplicate sends on second watcher call
+  # New key seen for the first time: start debounce
+  if ($latest.key -ne $script:ccPendingKey) {
+    $script:ccPendingKey = $latest.key
+    $script:ccPendingAt  = $now
+    Write-CtrlLog "CC pending (debouncing) key=$($latest.key)"
+    return
+  }
+
+  # Same pending key: check if debounce window has elapsed
+  if (($now - $script:ccPendingAt).TotalSeconds -lt $CcDebounceSec) { return }
+
+  # Debounce expired → this is the final response
   $script:ccLastCompletionKey = $latest.key
+  $script:ccPendingKey = ""
   Save-CcCompletionWatchState
-  Write-CtrlLog "CC new completion key=$($latest.key)"
+  Write-CtrlLog "CC new completion (debounced) key=$($latest.key)"
 
   $completionText = [string]$latest.text
   if ([string]::IsNullOrWhiteSpace($completionText)) { $completionText = "(text unavailable)" }
@@ -702,6 +727,15 @@ function Check-CcCompletionWatcher {
 
 Load-CompletionWatchState
 Load-CcCompletionWatchState
+# Startup: silently sync CC watcher baseline to avoid notifying on old completions after restart
+$_ccNow = Get-LatestCCFinalAssistant
+if ($_ccNow -and $_ccNow.key -ne $script:ccLastCompletionKey) {
+  $script:ccLastCompletionKey = $_ccNow.key
+  $script:ccWatchInitialized  = $true
+  $script:ccPendingKey = ""
+  Save-CcCompletionWatchState
+  Write-CtrlLog "CC startup sync key=$($_ccNow.key)"
+}
 Write-CtrlLog "Controller started pid=$PID"
 if ([string]::IsNullOrWhiteSpace($OneShotAction)) {
   Send-Tg "Notifier ready. Send /start for quick help."
@@ -885,6 +919,11 @@ while ($true) {
     Check-CompletionWatcher
   } catch {
     Write-CtrlLog "Watcher error (post-poll): $($_.Exception.Message)"
+  }
+  try {
+    Check-CcCompletionWatcher
+  } catch {
+    Write-CtrlLog "CC Watcher error (post-poll): $($_.Exception.Message)"
   }
   Start-Sleep -Seconds $PollSeconds
 }
