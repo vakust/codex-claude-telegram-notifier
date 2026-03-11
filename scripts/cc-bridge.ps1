@@ -167,13 +167,7 @@ function Get-UiaInputPoints([IntPtr]$hWnd) {
       }
     }
 
-    if ($result.Count -eq 0 -and $winW -gt 0 -and $winH -gt 0) {
-      $result += [PSCustomObject]@{
-        x = $winRect.Left + [int]($winW * 0.55)
-        y = $winRect.Top + [int]($winH * 0.88)
-        source = "uia-fallback"
-      }
-    }
+    # Note: do NOT add a geometric fallback here - coordinates would be stale at send time
     return $result
   } catch {
     Write-Dbg "UIA point read failed: $($_.Exception.Message)"
@@ -531,8 +525,31 @@ if ($Action -eq 'send_continue') {
   [Win32CCApi]::GetWindowRect($p.MainWindowHandle, [ref]$rect) | Out-Null
   $w = $rect.Right - $rect.Left
   $h = $rect.Bottom - $rect.Top
+  $midX = $rect.Left + [int]($w / 2)
 
-  # Build candidate list: UIA first, then saved, then fallbacks
+  # Attempt 0: no-click paste (Electron preserves focus on input when window is restored)
+  Write-Dbg "Attempt 0: no-click (focus + Esc + CtrlA + CtrlV + Enter)"
+  if (-not (Runtime-Exceeded $startedAt)) {
+    try { Set-Clipboard -Value $sendText } catch {}
+    Press-Key 0x1B          # Escape - dismiss any modal
+    Start-Sleep -Milliseconds 200
+    Send-CtrlA              # Select all existing text in input
+    Start-Sleep -Milliseconds 80
+    Send-CtrlV              # Paste
+    Start-Sleep -Milliseconds 250
+    Press-Key 0x0D          # Enter
+    Start-Sleep -Milliseconds $WaitAfterSendMs
+    if (Wait-ForCCDelivery $sessionPath $beforeBytes $probe) {
+      try { if ($oldClip) { Set-Clipboard -Value $oldClip } } catch {}
+      Write-Dbg "SUCCESS no-click"
+      Release-SendLock
+      Write-Output "SENT attempt=0 source=no-click delivered=1"
+      exit 0
+    }
+    Write-Dbg "No-click failed, trying coordinate-based"
+  }
+
+  # Build candidate list: UIA first, then saved, then bottom-anchored, then % fallbacks
   $candidates = @()
   $uiaPoints = Get-UiaInputPoints $p.MainWindowHandle
   foreach ($u in $uiaPoints) {
@@ -548,14 +565,15 @@ if ($Action -eq 'send_continue') {
       }
     }
   }
-  # Claude Code input is typically near bottom-right (send button area)
+  # Bottom-anchored: input field is ALWAYS near the bottom; fixed px offset is more reliable than %
+  @(55, 75, 95, 40, 115, 130) | ForEach-Object {
+    $candidates += [PSCustomObject]@{ source = "bottom-${_}px"; abs = $true; x = $midX; y = $rect.Bottom - [int]$_; xf = 0.0; yf = 0.0 }
+  }
+  # Last resort: percentage-based (less reliable if window is on secondary monitor)
   @(
-    @(0.55, 0.88), @(0.62, 0.88), @(0.50, 0.88),
-    @(0.55, 0.92), @(0.50, 0.92), @(0.62, 0.92),
-    @(0.50, 0.85), @(0.46, 0.88), @(0.54, 0.88),
-    @(0.50, 0.95)
+    @(0.50, 0.95), @(0.50, 0.92), @(0.50, 0.88), @(0.50, 0.85)
   ) | ForEach-Object {
-    $candidates += [PSCustomObject]@{ source = "fallback-$($_[0])-$($_[1])"; abs = $false; x = 0; y = 0; xf = $_[0]; yf = $_[1] }
+    $candidates += [PSCustomObject]@{ source = "pct-$($_[0])-$($_[1])"; abs = $false; x = 0; y = 0; xf = $_[0]; yf = $_[1] }
   }
 
   Write-Dbg "Candidates: $(($candidates | ForEach-Object { $_.source }) -join ', ')"
@@ -575,6 +593,7 @@ if ($Action -eq 'send_continue') {
     Write-Dbg "Attempt=$attempt source=$($pt.source) x=$x y=$y"
 
     if (Try-SendAt $p.MainWindowHandle $x $y $sendText $sessionPath $beforeBytes $probe $startedAt) {
+      # Save relative points (not bottom-anchored abs which are always computed fresh)
       if (-not $isAbs) { Save-Point $pt.xf $pt.yf }
       try { if ($oldClip) { Set-Clipboard -Value $oldClip } } catch {}
       Write-Dbg "SUCCESS attempt=$attempt source=$($pt.source)"
