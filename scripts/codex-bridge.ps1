@@ -617,14 +617,16 @@ if ($Action -eq 'send_continue') {
 
   # Query UIA with retry: placeholder may not yet be in accessibility tree right after task completes
   $uiaPoints = Get-UiaInputPoints -hWnd $p.MainWindowHandle
-  $hasPlaceholder = ($uiaPoints | Where-Object { $_.source -match 'placeholder' }).Count -gt 0
+  # @() wrapper required: PS5 returns bare object (not array) for single-item Where-Object,
+  # causing .Count to return $null instead of 1 — without @() placeholder always "not found"
+  $hasPlaceholder = @($uiaPoints | Where-Object { $_.source -match 'placeholder' }).Count -gt 0
   if (-not $hasPlaceholder -and -not (Runtime-Exceeded -startedAt $startedAt)) {
     Write-Dbg "UIA placeholder not found, retrying up to 3x (Codex may be settling)"
     for ($uiaTry = 1; $uiaTry -le 3; $uiaTry++) {
       if (Runtime-Exceeded -startedAt $startedAt) { break }
       Start-Sleep -Milliseconds 700
       $uiaPoints = Get-UiaInputPoints -hWnd $p.MainWindowHandle
-      $hasPlaceholder = ($uiaPoints | Where-Object { $_.source -match 'placeholder' }).Count -gt 0
+      $hasPlaceholder = @($uiaPoints | Where-Object { $_.source -match 'placeholder' }).Count -gt 0
       Write-Dbg "UIA retry $uiaTry/3: $(if ($hasPlaceholder) { 'placeholder FOUND' } else { 'still not found' })"
       if ($hasPlaceholder) { break }
     }
@@ -710,6 +712,32 @@ if ($Action -eq 'send_continue') {
     }
     Write-Dbg "Try attempt=$attempt source=$($pt.source) xf=$($pt.xf) yf=$($pt.yf)"
 
+    # UIA-confirmed candidates: single click+CtrlV+Enter, then wait up to 12s for ANY session
+    # activity (Codex does NOT write user message immediately — only after AI starts responding).
+    # After 12s, TRUST the UIA position and exit — don't spam with more attempts.
+    if ($pt.source -match 'uia-composer') {
+      Ensure-WindowForeground -hWnd $p.MainWindowHandle -maxTries 2 | Out-Null
+      Click-At -x $x -y $y
+      try { Set-Clipboard -Value $sendText } catch {}
+      Start-Sleep -Milliseconds 120
+      Send-CtrlV
+      Start-Sleep -Milliseconds 250
+      Press-Key -vk 0x0D
+      Start-Sleep -Milliseconds 600
+      Write-Dbg "UIA click+CtrlV+Enter done at x=$x y=$y. Waiting up to 12s for Codex session activity..."
+      $delivered = Wait-ForUserDelivery -sessionPath $sessionPath -beforeBytes $beforeBytes -probe "" -timeoutMs 12000
+      if ($delivered) {
+        Write-Dbg "UIA send confirmed: session grew (Codex is processing)"
+      } else {
+        Write-Dbg "UIA send: no session activity in 12s. Trusting UIA position and exiting."
+      }
+      try { if ($oldClipboard) { Set-Clipboard -Value $oldClipboard } } catch {}
+      Release-SendLock
+      Write-Output "SENT attempt=$attempt source=$($pt.source) x=$x y=$y pid=$($p.Id) delivered=$(if($delivered){1}else{'trusted'})"
+      exit 0
+    }
+
+    # Non-UIA candidates: standard multi-method Try-SendAt
     if (Try-SendAt -hWnd $p.MainWindowHandle -x $x -y $y -text $sendText -sessionPath $sessionPath -beforeBytes $beforeBytes -probe $probe -startedAt $startedAt) {
       if (-not ($pt.PSObject.Properties.Name -contains 'abs' -and $pt.abs)) {
         Save-Point -xf $pt.xf -yf $pt.yf
