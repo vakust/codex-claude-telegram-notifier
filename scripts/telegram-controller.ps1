@@ -467,7 +467,7 @@ function Check-CompletionWatcher {
   if ([string]::IsNullOrWhiteSpace($completionText)) {
     $completionText = "(last assistant text is not available yet)"
   }
-  $ok1 = Send-Tg "Codex завершил $($latest.timestamp.ToString('HH:mm:ss')) UTC."
+  $ok1 = Send-Tg "Codex done $($latest.timestamp.ToString('HH:mm:ss')) UTC."
   $ok2 = Send-TgChunked -prefix "Codex last text:" -text $completionText
 
   if ($ok1 -and $ok2) {
@@ -603,41 +603,72 @@ function Bind-CcInputPoint {
 function Get-LatestCCFinalAssistant {
   if (-not (Test-Path $ccSessionsRoot)) { return $null }
   try {
-    # Scan top-10 recently-modified files and pick the end_turn message with the highest
-    # actual obj.timestamp — not the file mtime. This prevents session-switching duplicates
-    # when background CC activity touches an older session file making it look "newest".
+    # Scan top-3 most-recently-modified JSONL files.
+    # Read the last 200 KB as raw bytes (bounded I/O, fast regardless of line length —
+    # CC session lines can be 50-100 KB each making Get-Content -Tail very slow).
+    # For each file: find the most-recent end_turn that is NOT followed by a user message
+    # (user message = tool_result = agent still running). Pick the one with highest timestamp.
     $files = @(Get-ChildItem $ccSessionsRoot -Recurse -File -Filter '*.jsonl' -ErrorAction SilentlyContinue |
-      Sort-Object LastWriteTime -Descending | Select-Object -First 10)
+      Sort-Object LastWriteTime -Descending | Select-Object -First 3)
     if ($files.Count -eq 0) { return $null }
 
+    $ReadBytes = 204800   # 200 KB tail window
     $best = $null
+
     foreach ($file in $files) {
-      $found = $false
-      foreach ($tailSize in @(60, 120)) {
-        if ($found) { break }
-        $lines = Get-Content $file.FullName -Tail $tailSize -Encoding UTF8 -ErrorAction SilentlyContinue
-        for ($i = $lines.Count - 1; $i -ge 0; $i--) {
-          $line = $lines[$i]
-          if ([string]::IsNullOrWhiteSpace($line)) { continue }
-          if ($line.Length -gt 100000) { continue }
-          if (-not $line.Contains('"type":"assistant"')) { continue }
-          try {
-            $obj = $line | ConvertFrom-Json
-            if ([string]$obj.type -ne 'assistant') { continue }
-            $sr = [string]$obj.message.stop_reason
-            if ($sr -ne 'end_turn' -and $sr -ne 'max_tokens') { continue }
-            $ts = [DateTime]::Parse([string]$obj.timestamp).ToUniversalTime()
-            $msgId = [string]$obj.message.id
-            $text = ($obj.message.content | Where-Object { $_.type -eq 'text' } |
-              ForEach-Object { [string]$_.text }) -join ""
-            $key = "$($ts.ToString('o'))|$msgId"
-            if (-not $best -or $ts -gt $best.timestamp) {
-              $best = [PSCustomObject]@{ timestamp = $ts; text = $text; key = $key }
-            }
-            $found = $true
-            break  # most-recent end_turn in this file found; compare with other files
-          } catch {}
-        }
+      try {
+        $stream = [System.IO.File]::Open(
+          $file.FullName,
+          [System.IO.FileMode]::Open,
+          [System.IO.FileAccess]::Read,
+          [System.IO.FileShare]::ReadWrite)
+        $readLen = [Math]::Min($stream.Length, $ReadBytes)
+        $null = $stream.Seek(-$readLen, [System.IO.SeekOrigin]::End)
+        $buf = New-Object byte[] $readLen
+        $got = $stream.Read($buf, 0, $readLen)
+        $stream.Close()
+        $tail = [System.Text.Encoding]::UTF8.GetString($buf, 0, $got)
+        $lines = @($tail -split "`n")
+      } catch { continue }
+
+      # Pass 1: find most-recent end_turn (scan backward)
+      $endTurnIdx = -1
+      $candidate  = $null
+      for ($i = $lines.Count - 1; $i -ge 0; $i--) {
+        $line = $lines[$i]
+        if ([string]::IsNullOrWhiteSpace($line)) { continue }
+        if (-not $line.Contains('"type":"assistant"')) { continue }
+        try {
+          $obj = $line | ConvertFrom-Json
+          if ([string]$obj.type -ne 'assistant') { continue }
+          $sr = [string]$obj.message.stop_reason
+          if ($sr -ne 'end_turn' -and $sr -ne 'max_tokens') { continue }
+          $ts    = [DateTime]::Parse([string]$obj.timestamp).ToUniversalTime()
+          $msgId = [string]$obj.message.id
+          $text  = ($obj.message.content | Where-Object { $_.type -eq 'text' } |
+                     ForEach-Object { [string]$_.text }) -join ""
+          $key   = "$($ts.ToString('o'))|$msgId"
+          $endTurnIdx = $i
+          $candidate  = [PSCustomObject]@{ timestamp = $ts; text = $text; key = $key }
+          break
+        } catch {}
+      }
+      if ($endTurnIdx -lt 0) { continue }
+
+      # Pass 2: check for user messages after end_turn (agent still in agentic loop)
+      $agentStillRunning = $false
+      for ($j = $endTurnIdx + 1; $j -lt $lines.Count; $j++) {
+        $line = $lines[$j]
+        if ([string]::IsNullOrWhiteSpace($line)) { continue }
+        if (-not $line.Contains('"type":"user"')) { continue }
+        try {
+          $obj = $line | ConvertFrom-Json
+          if ([string]$obj.type -eq 'user') { $agentStillRunning = $true; break }
+        } catch {}
+      }
+
+      if (-not $agentStillRunning -and (-not $best -or $candidate.timestamp -gt $best.timestamp)) {
+        $best = $candidate
       }
     }
     return $best
@@ -719,7 +750,7 @@ function Check-CcCompletionWatcher {
   $completionText = [string]$latest.text
   if ([string]::IsNullOrWhiteSpace($completionText)) { $completionText = "(text unavailable)" }
 
-  $ok1 = Send-Tg "[CC] Ответ готов $($latest.timestamp.ToString('HH:mm:ss')) UTC."
+  $ok1 = Send-Tg "[CC] Done $($latest.timestamp.ToString('HH:mm:ss')) UTC."
   $ok2 = Send-TgChunked -prefix "[CC] Last text:" -text $completionText
 
   if ($ok1 -and $ok2) {
