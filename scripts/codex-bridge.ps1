@@ -34,10 +34,13 @@ public class Win32BridgeApi {
   [DllImport("user32.dll")] public static extern void mouse_event(uint dwFlags, uint dx, uint dy, uint dwData, UIntPtr dwExtraInfo);
   [DllImport("user32.dll")] public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);
   [DllImport("user32.dll")] public static extern short VkKeyScan(char ch);
+  [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
   public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
 }
 "@
 }
+# Make GetWindowRect return physical pixels (matches UIA coords, fixes multi-monitor DPI scaling)
+try { [Win32BridgeApi]::SetProcessDPIAware() | Out-Null } catch {}
 
 function Write-Dbg([string]$msg) {
   $ts = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss.fff')
@@ -626,7 +629,9 @@ if ($Action -eq 'send_continue') {
 
   $candidates = @()
   $uiaPoints = Get-UiaInputPoints -hWnd $p.MainWindowHandle
-  foreach ($uiaPoint in $uiaPoints) {
+
+  # 1. UIA composer/placeholder candidates first (most accurate when follow-up input is visible)
+  foreach ($uiaPoint in ($uiaPoints | Where-Object { $_.source -notmatch 'xterm|uia-input' })) {
     $candidates += [PSCustomObject]@{
       source = [string]$uiaPoint.source
       abs = $true
@@ -636,12 +641,24 @@ if ($Action -eq 'send_continue') {
       yf = 0.0
     }
   }
-  $candidates += $savedCandidates
-  # Bottom-anchored: input field is always near the bottom regardless of window size
+  # 2. Bottom-anchored: reliable position-independent clicks (now DPI-aware, so rect is correct)
   @(55, 75, 95, 40, 115, 130) | ForEach-Object {
     $candidates += [PSCustomObject]@{
       source = "bottom-${_}px"; abs = $true
       x = $midX; y = $rect.Bottom - [int]$_; xf = 0.0; yf = 0.0
+    }
+  }
+  # 3. Saved point (percentage-based, valid across window positions)
+  $candidates += $savedCandidates
+  # 4. UIA xterm candidates last (often has wrong/outside-window coords on DPI-scaled monitors)
+  foreach ($uiaPoint in ($uiaPoints | Where-Object { $_.source -match 'xterm|uia-input' })) {
+    $candidates += [PSCustomObject]@{
+      source = [string]$uiaPoint.source
+      abs = $true
+      x = [int]$uiaPoint.x
+      y = [int]$uiaPoint.y
+      xf = 0.0
+      yf = 0.0
     }
   }
   $candidates += $fallbackCandidates
