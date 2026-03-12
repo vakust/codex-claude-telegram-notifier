@@ -486,26 +486,16 @@ function Send-ActionText([string]$label, [string]$prompt) {
   }
   Send-Tg "$label sending..."
   try {
-    $cli = Invoke-CodexCliSend -prompt $prompt
-    if ($cli.success) {
-      Mark-ActionRun
-      Write-CtrlLog "Action delivered (cli): $label | session=$($cli.session_id)"
-      Send-Tg "$label delivered."
-      return
-    }
-
-    $cliOutShort = $cli.out
-    if ($cliOutShort.Length -gt 300) { $cliOutShort = $cliOutShort.Substring(0,300) + " ..." }
-    Write-CtrlLog "Action CLI fallback to bridge: $label | exit=$($cli.exit_code) | session=$($cli.session_id) | out=$cliOutShort"
-
+    # Go straight to bridge — Codex Desktop doesn't support CLI session resume,
+    # so Invoke-CodexCliSend always timed out at 45 s, wasting time before every action.
     $out = & $bridge -Action send_continue -ContinueText $prompt -UseNonce:$false
     $exitCode = $LASTEXITCODE
     $outText = ($out -join ' ')
-    $delivered = ($outText -match 'delivered=1')
+    $delivered = ($outText -match 'delivered=(1|trusted)')
 
     if ($exitCode -eq 0 -and $delivered) {
       Mark-ActionRun
-      Write-CtrlLog "Action delivered (bridge): $label | bridge_out=$outText"
+      Write-CtrlLog "Action delivered: $label | $outText"
       Send-Tg "$label delivered."
       return
     }
@@ -561,7 +551,7 @@ function Send-CcActionText([string]$label, [string]$prompt) {
     $out = & $ccBridge -Action send_continue -ContinueText $prompt
     $exitCode = $LASTEXITCODE
     $outText = ($out -join ' ')
-    $delivered = ($outText -match 'delivered=1')
+    $delivered = ($outText -match 'delivered=(1|trusted)')
     if ($exitCode -eq 0 -and $delivered) {
       Mark-ActionRun
       Write-CtrlLog "CC Action delivered: $label | $outText"
@@ -613,32 +603,44 @@ function Bind-CcInputPoint {
 function Get-LatestCCFinalAssistant {
   if (-not (Test-Path $ccSessionsRoot)) { return $null }
   try {
-    $latestFile = Get-ChildItem $ccSessionsRoot -Recurse -File -Filter '*.jsonl' -ErrorAction SilentlyContinue |
-      Sort-Object LastWriteTime -Descending | Select-Object -First 1
-    if (-not $latestFile) { return $null }
+    # Scan top-10 recently-modified files and pick the end_turn message with the highest
+    # actual obj.timestamp — not the file mtime. This prevents session-switching duplicates
+    # when background CC activity touches an older session file making it look "newest".
+    $files = @(Get-ChildItem $ccSessionsRoot -Recurse -File -Filter '*.jsonl' -ErrorAction SilentlyContinue |
+      Sort-Object LastWriteTime -Descending | Select-Object -First 10)
+    if ($files.Count -eq 0) { return $null }
 
-    $tailCandidates = @(60, 120)
-    foreach ($tailSize in $tailCandidates) {
-      $lines = Get-Content $latestFile.FullName -Tail $tailSize -Encoding UTF8 -ErrorAction SilentlyContinue
-      for ($i = $lines.Count - 1; $i -ge 0; $i--) {
-        $line = $lines[$i]
-        if ([string]::IsNullOrWhiteSpace($line)) { continue }
-        if ($line.Length -gt 100000) { continue }
-        if (-not $line.Contains('"type":"assistant"')) { continue }
-        try {
-          $obj = $line | ConvertFrom-Json
-          if ([string]$obj.type -ne 'assistant') { continue }
-          $sr = [string]$obj.message.stop_reason
-          if ($sr -ne 'end_turn' -and $sr -ne 'max_tokens') { continue }
-          $ts = [DateTime]::Parse([string]$obj.timestamp).ToUniversalTime()
-          $msgId = [string]$obj.message.id
-          $text = ($obj.message.content | Where-Object { $_.type -eq 'text' } |
-            ForEach-Object { [string]$_.text }) -join ""
-          $key = "$($ts.ToString('o'))|$msgId"
-          return [PSCustomObject]@{ timestamp = $ts; text = $text; key = $key }
-        } catch {}
+    $best = $null
+    foreach ($file in $files) {
+      $found = $false
+      foreach ($tailSize in @(60, 120)) {
+        if ($found) { break }
+        $lines = Get-Content $file.FullName -Tail $tailSize -Encoding UTF8 -ErrorAction SilentlyContinue
+        for ($i = $lines.Count - 1; $i -ge 0; $i--) {
+          $line = $lines[$i]
+          if ([string]::IsNullOrWhiteSpace($line)) { continue }
+          if ($line.Length -gt 100000) { continue }
+          if (-not $line.Contains('"type":"assistant"')) { continue }
+          try {
+            $obj = $line | ConvertFrom-Json
+            if ([string]$obj.type -ne 'assistant') { continue }
+            $sr = [string]$obj.message.stop_reason
+            if ($sr -ne 'end_turn' -and $sr -ne 'max_tokens') { continue }
+            $ts = [DateTime]::Parse([string]$obj.timestamp).ToUniversalTime()
+            $msgId = [string]$obj.message.id
+            $text = ($obj.message.content | Where-Object { $_.type -eq 'text' } |
+              ForEach-Object { [string]$_.text }) -join ""
+            $key = "$($ts.ToString('o'))|$msgId"
+            if (-not $best -or $ts -gt $best.timestamp) {
+              $best = [PSCustomObject]@{ timestamp = $ts; text = $text; key = $key }
+            }
+            $found = $true
+            break  # most-recent end_turn in this file found; compare with other files
+          } catch {}
+        }
       }
     }
+    return $best
   } catch {
     Write-CtrlLog "CC JSONL read error: $($_.Exception.Message)"
   }
