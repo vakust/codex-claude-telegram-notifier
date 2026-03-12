@@ -615,53 +615,71 @@ if ($Action -eq 'send_continue') {
     $savedCandidates += [PSCustomObject]@{ xf = $sx; yf = (Clamp01 ($sy + 0.03)); source = "saved-down" }
   }
 
-  $fallbackCandidates = @(
-    [PSCustomObject]@{ xf = 0.55; yf = 0.84; source = "fallback-x55-y84" },
-    [PSCustomObject]@{ xf = 0.62; yf = 0.84; source = "fallback-x62-y84" },
-    [PSCustomObject]@{ xf = 0.50; yf = 0.84; source = "fallback-center-y84" },
-    [PSCustomObject]@{ xf = 0.50; yf = 0.87; source = "fallback-center-y87" },
-    [PSCustomObject]@{ xf = 0.62; yf = 0.87; source = "fallback-x62-y87" },
-    [PSCustomObject]@{ xf = 0.46; yf = 0.84; source = "fallback-left-y84" },
-    [PSCustomObject]@{ xf = 0.54; yf = 0.84; source = "fallback-right-y84" },
-    [PSCustomObject]@{ xf = 0.50; yf = 0.90; source = "fallback-center-y90" },
-    [PSCustomObject]@{ xf = 0.50; yf = 0.94; source = "fallback-center-y94" }
-  )
-
-  $candidates = @()
+  # Query UIA with retry: placeholder may not yet be in accessibility tree right after task completes
   $uiaPoints = Get-UiaInputPoints -hWnd $p.MainWindowHandle
-
-  # 1. UIA composer/placeholder candidates first (most accurate when follow-up input is visible)
-  foreach ($uiaPoint in ($uiaPoints | Where-Object { $_.source -notmatch 'xterm|uia-input' })) {
-    $candidates += [PSCustomObject]@{
-      source = [string]$uiaPoint.source
-      abs = $true
-      x = [int]$uiaPoint.x
-      y = [int]$uiaPoint.y
-      xf = 0.0
-      yf = 0.0
+  $hasPlaceholder = ($uiaPoints | Where-Object { $_.source -match 'placeholder' }).Count -gt 0
+  if (-not $hasPlaceholder -and -not (Runtime-Exceeded -startedAt $startedAt)) {
+    Write-Dbg "UIA placeholder not found, retrying up to 3x (Codex may be settling)"
+    for ($uiaTry = 1; $uiaTry -le 3; $uiaTry++) {
+      if (Runtime-Exceeded -startedAt $startedAt) { break }
+      Start-Sleep -Milliseconds 700
+      $uiaPoints = Get-UiaInputPoints -hWnd $p.MainWindowHandle
+      $hasPlaceholder = ($uiaPoints | Where-Object { $_.source -match 'placeholder' }).Count -gt 0
+      Write-Dbg "UIA retry $uiaTry/3: $(if ($hasPlaceholder) { 'placeholder FOUND' } else { 'still not found' })"
+      if ($hasPlaceholder) { break }
     }
   }
-  # 2. Bottom-anchored: reliable position-independent clicks (now DPI-aware, so rect is correct)
-  @(55, 75, 95, 40, 115, 130) | ForEach-Object {
+
+  $candidates = @()
+
+  # 1. UIA composer/placeholder — most accurate, physical coords from accessibility API
+  foreach ($uiaPoint in ($uiaPoints | Where-Object { $_.source -notmatch 'xterm|uia-input' })) {
+    $candidates += [PSCustomObject]@{
+      source = [string]$uiaPoint.source; abs = $true
+      x = [int]$uiaPoint.x; y = [int]$uiaPoint.y; xf = 0.0; yf = 0.0
+    }
+  }
+
+  # 2. Primary percentage y≈0.84 — confirmed Codex input position from UIA observations
+  #    (UIA found placeholder at y≈1340 in H=1202 window → y_factor≈0.842)
+  #    These come BEFORE saved/bottom so they run while time budget is fresh
+  @(
+    [PSCustomObject]@{ xf = 0.50; yf = 0.84; source = "pct-center-y84" },
+    [PSCustomObject]@{ xf = 0.55; yf = 0.84; source = "pct-x55-y84" },
+    [PSCustomObject]@{ xf = 0.60; yf = 0.84; source = "pct-x60-y84" },
+    [PSCustomObject]@{ xf = 0.50; yf = 0.82; source = "pct-center-y82" },
+    [PSCustomObject]@{ xf = 0.50; yf = 0.86; source = "pct-center-y86" }
+  ) | ForEach-Object { $candidates += $_ }
+
+  # 3. Saved/calibrated point (set via Bind Point button)
+  $candidates += $savedCandidates
+
+  # 4. Bottom-anchored with correct large offset: Codex input is ~190px above window bottom
+  #    (NOT 55px — there is toolbar/chrome below the input field)
+  @(190, 175, 205, 160, 220) | ForEach-Object {
     $candidates += [PSCustomObject]@{
       source = "bottom-${_}px"; abs = $true
       x = $midX; y = $rect.Bottom - [int]$_; xf = 0.0; yf = 0.0
     }
   }
-  # 3. Saved point (percentage-based, valid across window positions)
-  $candidates += $savedCandidates
-  # 4. UIA xterm candidates last (often has wrong/outside-window coords on DPI-scaled monitors)
+
+  # 5. UIA xterm — last resort, often wrong coords on DPI-scaled monitors
   foreach ($uiaPoint in ($uiaPoints | Where-Object { $_.source -match 'xterm|uia-input' })) {
     $candidates += [PSCustomObject]@{
-      source = [string]$uiaPoint.source
-      abs = $true
-      x = [int]$uiaPoint.x
-      y = [int]$uiaPoint.y
-      xf = 0.0
-      yf = 0.0
+      source = [string]$uiaPoint.source; abs = $true
+      x = [int]$uiaPoint.x; y = [int]$uiaPoint.y; xf = 0.0; yf = 0.0
     }
   }
-  $candidates += $fallbackCandidates
+
+  # 6. Extended sweep in case Codex layout differs from baseline
+  @(
+    [PSCustomObject]@{ xf = 0.50; yf = 0.87; source = "pct-center-y87" },
+    [PSCustomObject]@{ xf = 0.50; yf = 0.81; source = "pct-center-y81" },
+    [PSCustomObject]@{ xf = 0.55; yf = 0.87; source = "pct-x55-y87" },
+    [PSCustomObject]@{ xf = 0.50; yf = 0.88; source = "pct-center-y88" },
+    [PSCustomObject]@{ xf = 0.50; yf = 0.90; source = "pct-center-y90" }
+  ) | ForEach-Object { $candidates += $_ }
+
   Write-Dbg "Candidate order: $((($candidates | ForEach-Object { $_.source }) -join ', '))"
 
   $attempt = 0
