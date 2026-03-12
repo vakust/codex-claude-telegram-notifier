@@ -163,14 +163,7 @@ function Get-UiaInputPoints([IntPtr]$hWnd) {
       }
     }
 
-    if ($result.Count -eq 0 -and $winW -gt 0 -and $winH -gt 0) {
-      # Fallback near expected composer zone when UIA fails.
-      $result += [PSCustomObject]@{
-        x = $winRect.Left + [int]($winW * 0.55)
-        y = $winRect.Top + [int]($winH * 0.84)
-        source = "uia-fallback"
-      }
-    }
+    # Note: no stale geometric fallback — coords would be wrong if window moved since UIA query
     return $result
   } catch {
     Write-Dbg "UIA point read failed: $($_.Exception.Message)"
@@ -583,6 +576,29 @@ if ($Action -eq 'send_continue') {
   [Win32BridgeApi]::GetWindowRect($p.MainWindowHandle, [ref]$rect) | Out-Null
   $w = $rect.Right - $rect.Left
   $h = $rect.Bottom - $rect.Top
+  $midX = $rect.Left + [int]($w / 2)
+
+  # Attempt 0: no-click paste (works if input field is already focused from last session)
+  Write-Dbg "Attempt 0: no-click (Esc + CtrlA + CtrlV + Enter)"
+  if (-not (Runtime-Exceeded -startedAt $startedAt)) {
+    try { Set-Clipboard -Value $sendText } catch {}
+    Press-Key -vk 0x1B          # Escape - dismiss any modal
+    Start-Sleep -Milliseconds 200
+    Send-CtrlA                  # Select all in input
+    Start-Sleep -Milliseconds 80
+    Send-CtrlV                  # Paste
+    Start-Sleep -Milliseconds 250
+    Press-Key -vk 0x0D          # Enter
+    Start-Sleep -Milliseconds $WaitAfterSendMs
+    if (Wait-ForUserDelivery -sessionPath $sessionPath -beforeBytes $beforeBytes -probe $probe) {
+      try { if ($oldClipboard) { Set-Clipboard -Value $oldClipboard } } catch {}
+      Write-Dbg "SUCCESS no-click"
+      Release-SendLock
+      Write-Output "SENT attempt=0 source=no-click delivered=1"
+      exit 0
+    }
+    Write-Dbg "No-click failed, trying coordinate-based"
+  }
 
   $saved = Load-Point
   $savedCandidates = @()
@@ -621,6 +637,13 @@ if ($Action -eq 'send_continue') {
     }
   }
   $candidates += $savedCandidates
+  # Bottom-anchored: input field is always near the bottom regardless of window size
+  @(55, 75, 95, 40, 115, 130) | ForEach-Object {
+    $candidates += [PSCustomObject]@{
+      source = "bottom-${_}px"; abs = $true
+      x = $midX; y = $rect.Bottom - [int]$_; xf = 0.0; yf = 0.0
+    }
+  }
   $candidates += $fallbackCandidates
   Write-Dbg "Candidate order: $((($candidates | ForEach-Object { $_.source }) -join ', '))"
 

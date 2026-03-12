@@ -455,7 +455,11 @@ function Check-CompletionWatcher {
 
   if ($latest.key -eq $script:lastCompletionKey) { return }
 
-  Write-CtrlLog "New completion candidate key=$($latest.key)"
+  # Commit key FIRST to prevent duplicate sends
+  $script:lastCompletionKey = $latest.key
+  Save-CompletionWatchState
+  Write-CtrlLog "Codex new completion key=$($latest.key)"
+
   $completionText = [string]$latest.text
   if ([string]::IsNullOrWhiteSpace($completionText)) {
     $completionText = Get-LastAssistantText
@@ -463,15 +467,13 @@ function Check-CompletionWatcher {
   if ([string]::IsNullOrWhiteSpace($completionText)) {
     $completionText = "(last assistant text is not available yet)"
   }
-  $ok1 = Send-Tg "Completion detected at $($latest.timestamp.ToString('yyyy-MM-dd HH:mm:ss')) UTC."
-  $ok2 = Send-TgChunked -prefix "Completion last assistant text:" -text $completionText
+  $ok1 = Send-Tg "Codex завершил $($latest.timestamp.ToString('HH:mm:ss')) UTC."
+  $ok2 = Send-TgChunked -prefix "Codex last text:" -text $completionText
 
   if ($ok1 -and $ok2) {
-    $script:lastCompletionKey = $latest.key
-    Save-CompletionWatchState
-    Write-CtrlLog "Completion notification sent; key committed=$($latest.key)"
+    Write-CtrlLog "Codex notification sent; key=$($latest.key)"
   } else {
-    Write-CtrlLog "Completion notification send failed; will retry key=$($latest.key)"
+    Write-CtrlLog "Codex notification send failed (key already committed)"
   }
 }
 
@@ -726,6 +728,15 @@ function Check-CcCompletionWatcher {
 }
 
 Load-CompletionWatchState
+# Startup: silently sync Codex watcher baseline to avoid old-message notifications after restart
+$_codexNow = Get-LatestFinalAssistant
+if ($_codexNow -and $_codexNow.key -ne $script:lastCompletionKey) {
+  $script:lastCompletionKey = $_codexNow.key
+  $script:watchInitialized   = $true
+  Save-CompletionWatchState
+  Write-CtrlLog "Codex startup sync key=$($_codexNow.key)"
+}
+
 Load-CcCompletionWatchState
 # Startup: silently sync CC watcher baseline to avoid notifying on old completions after restart
 $_ccNow = Get-LatestCCFinalAssistant
