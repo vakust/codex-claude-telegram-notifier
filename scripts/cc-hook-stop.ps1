@@ -1,6 +1,7 @@
 param(
   [string]$ConfigPath = "c:\001_dev\notifier\.env.ps1",
   [string]$HookStatePath = "c:\001_dev\notifier\state\cc-hook-state.json",
+  [string]$HookNotifiedPath = "c:\001_dev\notifier\state\cc-hook-notified.json",
   [string]$LogPath = "c:\001_dev\notifier\logs\cc-hook.log"
 )
 
@@ -120,7 +121,16 @@ try {
 $ts = (Get-Date).ToString("HH:mm:ss")
 $notify = "[CC] Done $ts"
 Write-HookLog "Sending notification key=$key"
-Send-Tg $notify | Out-Null
+& $sender -BotToken $bot -ChatId $chat -Text $notify -ReplyMarkup $menu
+$sent = ($LASTEXITCODE -eq 0)
+
+if ($sent) {
+  # Signal to the JSONL watcher in the controller so it won't double-notify
+  try {
+    @{ notified_at = (Get-Date).ToString('o') } | ConvertTo-Json |
+      Set-Content -Path $HookNotifiedPath -Encoding UTF8
+  } catch {}
+}
 
 if (-not [string]::IsNullOrWhiteSpace($lastText)) {
   $max = 3200

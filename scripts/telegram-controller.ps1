@@ -43,6 +43,7 @@ $codexSessionIdPath = "c:\001_dev\notifier\state\codex-session-id.txt"
 $ccBridge = "c:\001_dev\notifier\scripts\cc-bridge.ps1"
 $ccSessionsRoot = Join-Path $env:USERPROFILE ".claude\projects"
 $ccCompletionWatchPath = "c:\001_dev\notifier\state\cc-completion-watch.json"
+$ccHookNotifiedPath    = "c:\001_dev\notifier\state\cc-hook-notified.json"
 $menu = '{"keyboard":[[{"text":"Status"},{"text":"Continue"},{"text":"CC: Continue"}],[{"text":"Fix+Retest"},{"text":"CC: Fix+Retest"},{"text":"Stop"}],[{"text":"Set Custom"},{"text":"Send Custom"},{"text":"CC: Custom"}],[{"text":"Show Custom"},{"text":"Clear Custom"}],[{"text":"Last Text"},{"text":"CC: Last Text"},{"text":"Bind Point"},{"text":"CC: Bind"}]],"resize_keyboard":true,"is_persistent":true}'
 
 $script:watchInitialized = $false
@@ -746,6 +747,21 @@ function Check-CcCompletionWatcher {
   $script:ccPendingKey = ""
   Save-CcCompletionWatchState
   Write-CtrlLog "CC new completion (debounced) key=$($latest.key)"
+
+  # Check if the CC hook already sent this notification (within last 30s) — avoid double-notify
+  $hookAlreadyNotified = $false
+  if (Test-Path $ccHookNotifiedPath) {
+    try {
+      $hn = Get-Content $ccHookNotifiedPath -Raw | ConvertFrom-Json
+      $hnAge = ((Get-Date) - [DateTime]::Parse([string]$hn.notified_at)).TotalSeconds
+      if ($hnAge -lt 30) { $hookAlreadyNotified = $true }
+    } catch {}
+  }
+
+  if ($hookAlreadyNotified) {
+    Write-CtrlLog "CC watcher suppressed: hook notified ${hnAge}s ago"
+    return
+  }
 
   $completionText = [string]$latest.text
   if ([string]::IsNullOrWhiteSpace($completionText)) { $completionText = "(text unavailable)" }
