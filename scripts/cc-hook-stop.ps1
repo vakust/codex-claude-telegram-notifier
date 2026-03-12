@@ -118,7 +118,7 @@ try {
 
 # --- Notify ---
 $ts = (Get-Date).ToString("HH:mm:ss")
-$notify = "[CC] Ответ готов $ts"
+$notify = "[CC] Done $ts"
 Write-HookLog "Sending notification key=$key"
 Send-Tg $notify | Out-Null
 
