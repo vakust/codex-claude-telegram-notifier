@@ -22,6 +22,30 @@ Location: `c:\001_dev\notifier\`
 
 `Stop` does not close Codex Desktop and does not terminate the Codex app itself.
 
+## How input targeting works (Codex + Cloud Code)
+Common flow:
+1. Find target app window process (`Codex` or `claude`) with non-zero `MainWindowHandle`.
+2. Restore and focus that exact window (`ShowWindow` + `SetForegroundWindow` + `AppActivate` retries).
+3. Resolve input coordinates via UI Automation (UIA) and click/send there.
+
+### Codex specifics (`scripts/codex-bridge.ps1`)
+- UIA first tries known composer placeholder names (including `Ask for follow-up changes`).
+- If placeholder name changed, fallback scans `ControlType.Edit` controls and scores likely input fields near the bottom.
+- `xterm-helper-textarea` remains a last-resort candidate.
+- Codex also keeps geometric fallback candidates (saved bind point, bottom offsets, percentages) for resilience.
+
+### Cloud Code specifics (`scripts/cc-bridge.ps1`)
+- Uses UIA placeholder-name targeting first (fast list: `Reply...`, `Reply to Claude...`, `Type a message...`, `How can Claude help?`).
+- If placeholder is not found, uses UIA anchor fallback from `Bypass permissions` button (click point above that control).
+- Does **not** use geometric (`bottom/%/saved`) candidates in send flow.
+- Does **not** use no-click (`Esc/Ctrl+A/Ctrl+V`) send path in Cloud Code bridge.
+- Uses `delivered=trusted` for UIA send when JSONL append confirmation is delayed (to avoid duplicate retries/multi-click spam).
+
+### Why this survives window moves
+- Coordinates are taken fresh from the current window/UIA tree before each send.
+- Stored bind point is normalized (`x_factor`, `y_factor`) relative to the current window size.
+- `Bind Point` is optional and primarily useful for Codex fallback scenarios.
+
 ## Security and sharing
 - Never share `.env.ps1` (contains your bot token).
 - Before publishing/sharing, rotate token in BotFather if it was ever exposed.

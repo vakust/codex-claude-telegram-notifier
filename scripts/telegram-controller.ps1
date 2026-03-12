@@ -44,7 +44,7 @@ $ccBridge = "c:\001_dev\notifier\scripts\cc-bridge.ps1"
 $ccSessionsRoot = Join-Path $env:USERPROFILE ".claude\projects"
 $ccCompletionWatchPath = "c:\001_dev\notifier\state\cc-completion-watch.json"
 $ccHookNotifiedPath    = "c:\001_dev\notifier\state\cc-hook-notified.json"
-$menu = '{"keyboard":[[{"text":"Status"},{"text":"Continue"},{"text":"CC: Continue"}],[{"text":"Fix+Retest"},{"text":"CC: Fix+Retest"},{"text":"Stop"}],[{"text":"Set Custom"},{"text":"Send Custom"},{"text":"CC: Custom"}],[{"text":"Show Custom"},{"text":"Clear Custom"}],[{"text":"Last Text"},{"text":"CC: Last Text"},{"text":"Bind Point"},{"text":"CC: Bind"}]],"resize_keyboard":true,"is_persistent":true}'
+$menu = '{"keyboard":[[{"text":"Continue"},{"text":"CC: Continue"}],[{"text":"Fix+Retest"},{"text":"CC: Fix+Retest"}],[{"text":"Send Custom"},{"text":"CC: Custom"}],[{"text":"Last Text"},{"text":"CC: Last Text"}],[{"text":"Bind Point"},{"text":"CC: Bind"}],[{"text":"Set Custom"},{"text":"Show Custom"},{"text":"Clear Custom"}],[{"text":"Status"},{"text":"Stop"}]],"resize_keyboard":true,"is_persistent":true}'
 
 $script:watchInitialized = $false
 $script:lastCompletionKey = ""
@@ -186,8 +186,8 @@ function Send-Help {
 <b>Common:</b>
 - Set Custom -&gt; Send Custom: save and send custom prompt (Codex)
 - Last Text: last assistant text from Codex
-- Status: show local state
-- Stop: stop local wrapper PID
+- Status: show controller state + last local wrapper task state
+- Stop: stop local wrapper PID (does not stop Codex/Claude app windows)
 
 <b>Completion notifications</b> arrive automatically from both Codex (JSONL watcher) and Claude Code (hook + JSONL watcher).
 Codex messages have no prefix; Claude Code messages are prefixed <b>[CC]</b>.
@@ -290,13 +290,35 @@ function Save-CustomPrompt([string]$text) {
 }
 
 function Send-Status {
+  $self = Get-Process -Id $PID -ErrorAction SilentlyContinue
+  $uptimeMin = 0
+  if ($self) {
+    $uptimeMin = [int](((Get-Date) - $self.StartTime).TotalMinutes)
+  }
+  $head = "Controller: running (pid=$PID, uptime=${uptimeMin} min)"
+
   if (-not (Test-Path $StatePath)) {
-    Send-Tg "Status: no local task state yet."
+    Send-Tg "$head`nTask state: no local task state yet."
     return
   }
 
   try {
-    $s = Get-Content $StatePath -Raw | ConvertFrom-Json
+    $raw = ""
+    $lastReadErr = ""
+    for ($i = 0; $i -lt 3; $i++) {
+      try {
+        $raw = Get-Content $StatePath -Raw -Encoding UTF8 -ErrorAction Stop
+        if (-not [string]::IsNullOrWhiteSpace($raw)) { break }
+      } catch {
+        $lastReadErr = $_.Exception.Message
+      }
+      Start-Sleep -Milliseconds 120
+    }
+    if ([string]::IsNullOrWhiteSpace($raw)) {
+      if ([string]::IsNullOrWhiteSpace($lastReadErr)) { $lastReadErr = "state file is empty" }
+      throw "could not read state file ($lastReadErr)"
+    }
+    $s = $raw | ConvertFrom-Json -ErrorAction Stop
     $task = [string]$s.task
     $status = [string]$s.status
     $started = [string]$s.started_at
@@ -314,7 +336,8 @@ function Send-Status {
     if ([string]::IsNullOrWhiteSpace($exitCode)) { $exitCode = "-" }
 
     $statusText = @"
-Status:
+$head
+Task status:
 Task: $task
 State: $status
 PID: $pid
@@ -325,7 +348,7 @@ Updated: $updated
 "@
     Send-Tg $statusText
   } catch {
-    Send-Tg "Status read error: $($_.Exception.Message)"
+    Send-Tg "$head`nTask state: read error ($($_.Exception.Message))"
   }
 }
 
@@ -852,7 +875,13 @@ while ($true) {
         Write-CtrlLog "TG message received: [$textLower]"
 
         if (Is-CustomAwaitMode) {
-          $reserved = @("status","continue","fix+retest","fix+test","action a","action b","action c","set custom","send custom","show custom","clear custom","last text","bind point","stop","/status","/c_continue","/c_retest","/c_fix","/lastlog","/stop")
+          $reserved = @(
+            "status","continue","fix+retest","fix+test","action a","action b","action c",
+            "set custom","send custom","show custom","clear custom","last text","bind point","stop",
+            "/status","/c_continue","/c_retest","/c_fix","/lastlog","/stop",
+            "cc: continue","cc:continue","/cc_continue","cc: fix+retest","cc:fix+retest",
+            "cc: custom","cc:custom","cc: last text","cc:last text","cc: bind","cc:bind"
+          )
           if ($textLower -eq "cancel" -or $textLower -eq "/cancel") {
             Set-CustomAwaitMode -enabled $false
             Send-Tg "Set Custom cancelled."

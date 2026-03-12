@@ -83,6 +83,15 @@ function Get-CodexWindowProcess {
   return Get-Process Codex -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
 }
 
+$script:CodexPlaceholderNames = @(
+  'Ask for follow-up changes',
+  'Ask follow-up questions',
+  'Ask anything...',
+  'Type a message...',
+  'Message Codex...',
+  'Send a message'
+)
+
 function Get-UiaInputPoints([IntPtr]$hWnd) {
   $result = @()
   if (-not $script:UIAutomationReady) { return $result }
@@ -95,26 +104,71 @@ function Get-UiaInputPoints([IntPtr]$hWnd) {
     $winW = $winRect.Right - $winRect.Left
     $winH = $winRect.Bottom - $winRect.Top
     $scope = [System.Windows.Automation.TreeScope]::Descendants
-    $nameCond = New-Object System.Windows.Automation.PropertyCondition(
-      [System.Windows.Automation.AutomationElement]::NameProperty,
-      'Ask for follow-up changes'
-    )
     $placeholder = $null
-    $allPlaceholders = $root.FindAll($scope, $nameCond)
-    if ($allPlaceholders -and $allPlaceholders.Count -gt 0) {
-      $bestY = -1.0
-      for ($pi = 0; $pi -lt $allPlaceholders.Count; $pi++) {
-        $cand = $allPlaceholders.Item($pi)
+    $placeholderSource = ''
+
+    # Try known placeholder names first (stable and precise when available).
+    $bestY = -1.0
+    foreach ($ph in $script:CodexPlaceholderNames) {
+      $nameCond = New-Object System.Windows.Automation.PropertyCondition(
+        [System.Windows.Automation.AutomationElement]::NameProperty,
+        $ph
+      )
+      $allMatches = $root.FindAll($scope, $nameCond)
+      if (-not $allMatches -or $allMatches.Count -le 0) { continue }
+      for ($pi = 0; $pi -lt $allMatches.Count; $pi++) {
+        $cand = $allMatches.Item($pi)
         try {
           $cb = $cand.Current.BoundingRectangle
           if ($cb.Width -le 0 -or $cb.Height -le 0) { continue }
           if ($cb.Y -gt $bestY) {
             $bestY = $cb.Y
             $placeholder = $cand
+            $placeholderSource = "name:$ph"
           }
         } catch {}
       }
     }
+
+    # Fallback: best Edit control near the bottom of the window.
+    if (-not $placeholder) {
+      $editCond = New-Object System.Windows.Automation.PropertyCondition(
+        [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+        [System.Windows.Automation.ControlType]::Edit
+      )
+      $edits = $root.FindAll($scope, $editCond)
+      if ($edits -and $edits.Count -gt 0) {
+        $bestScore = -100000
+        for ($ei = 0; $ei -lt $edits.Count; $ei++) {
+          $cand = $edits.Item($ei)
+          try {
+            $cb = $cand.Current.BoundingRectangle
+            if ($cb.Width -le 0 -or $cb.Height -le 0) { continue }
+            if ($cb.Width -lt 140 -or $cb.Height -lt 14) { continue }
+
+            $name = [string]$cand.Current.Name
+            $class = [string]$cand.Current.ClassName
+            $score = 0
+            if ($cb.Y -ge ($winRect.Top + ($winH * 0.55))) { $score += 40 } else { $score -= 20 }
+            if ($cb.Width -ge ($winW * 0.30)) { $score += 20 }
+            if ($cb.Height -ge 18) { $score += 10 }
+            if ($name -match '(?i)(follow-?up|message|ask|chat|prompt|reply)') { $score += 25 }
+            if ($class -eq 'xterm-helper-textarea') { $score -= 30 }
+
+            # Prefer lower elements when scores tie.
+            $yBias = [int][Math]::Round(($cb.Y - $winRect.Top) / [Math]::Max(1.0, [double]$winH) * 10.0)
+            $score += $yBias
+
+            if ($score -gt $bestScore) {
+              $bestScore = $score
+              $placeholder = $cand
+              $placeholderSource = "edit:$class|$name|score=$score"
+            }
+          } catch {}
+        }
+      }
+    }
+
     if ($placeholder) {
       $pb = $placeholder.Current.BoundingRectangle
       if ($pb.Width -gt 0 -and $pb.Height -gt 0) {
@@ -126,7 +180,7 @@ function Get-UiaInputPoints([IntPtr]$hWnd) {
           y = [int][Math]::Round($cy + 2)
           source = "uia-composer-right"
         }
-        Write-Dbg "UIA composer placeholder=($cx,$cy) width=$([Math]::Round($pb.Width,1)) height=$([Math]::Round($pb.Height,1))"
+        Write-Dbg "UIA composer placeholder=($cx,$cy) width=$([Math]::Round($pb.Width,1)) height=$([Math]::Round($pb.Height,1)) source=$placeholderSource"
       }
     }
 
@@ -756,4 +810,3 @@ if ($Action -eq 'send_continue') {
   Write-Output "SEND_UNCONFIRMED attempts=$attempt pid=$($p.Id) delivered=0"
   exit 12
 }
-

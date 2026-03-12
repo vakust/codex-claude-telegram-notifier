@@ -34,10 +34,12 @@ public class Win32CCApi {
   [DllImport("user32.dll")] public static extern void mouse_event(uint dwFlags, uint dx, uint dy, uint dwData, UIntPtr dwExtraInfo);
   [DllImport("user32.dll")] public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);
   [DllImport("user32.dll")] public static extern short VkKeyScan(char ch);
+  [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
   public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
 }
 "@
 }
+try { [Win32CCApi]::SetProcessDPIAware() | Out-Null } catch {}
 
 function Write-Dbg([string]$msg) {
   $ts = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss.fff')
@@ -83,6 +85,8 @@ function Get-ClaudeWindowProcess {
 
 # Known placeholder names for Claude Code input area (try all)
 $script:CCPlaceholders = @(
+  'Reply...',
+  'Reply…',
   'Reply to Claude...',
   'How can Claude help?',
   'Plan and execute your software tasks',
@@ -101,73 +105,55 @@ function Get-UiaInputPoints([IntPtr]$hWnd) {
     if (-not $root) { return $result }
     $winRect = New-Object Win32CCApi+RECT
     [Win32CCApi]::GetWindowRect($hWnd, [ref]$winRect) | Out-Null
-    $winW = $winRect.Right - $winRect.Left
-    $winH = $winRect.Bottom - $winRect.Top
     $scope = [System.Windows.Automation.TreeScope]::Descendants
 
-    # Try each known placeholder
-    $placeholder = $null
-    foreach ($ph in $script:CCPlaceholders) {
+    # Placeholder-name targeting first (fast path).
+    $fastPlaceholders = @(
+      'Reply...',
+      'Reply to Claude...',
+      'Type a message...',
+      'How can Claude help?'
+    )
+    foreach ($ph in $fastPlaceholders) {
       $nameCond = New-Object System.Windows.Automation.PropertyCondition(
         [System.Windows.Automation.AutomationElement]::NameProperty, $ph)
-      $allPH = $root.FindAll($scope, $nameCond)
-      if ($allPH -and $allPH.Count -gt 0) {
-        $bestY = -1.0
-        for ($pi = 0; $pi -lt $allPH.Count; $pi++) {
-          $cand = $allPH.Item($pi)
-          try {
-            $cb = $cand.Current.BoundingRectangle
-            if ($cb.Width -le 0 -or $cb.Height -le 0) { continue }
-            if ($cb.Y -gt $bestY) { $bestY = $cb.Y; $placeholder = $cand }
-          } catch {}
-        }
-        if ($placeholder) {
-          Write-Dbg "UIA found placeholder '$ph'"
-          break
-        }
-      }
-    }
-
-    if ($placeholder) {
-      $pb = $placeholder.Current.BoundingRectangle
+      $sw = [Diagnostics.Stopwatch]::StartNew()
+      $cand = $root.FindFirst($scope, $nameCond)
+      $sw.Stop()
+      Write-Dbg "UIA name lookup '$ph' took $($sw.ElapsedMilliseconds)ms found=$([bool]$cand)"
+      if (-not $cand) { continue }
+      $pb = $cand.Current.BoundingRectangle
       if ($pb.Width -gt 0 -and $pb.Height -gt 0) {
         $cx = [int][Math]::Round($pb.X + [Math]::Min(180.0, ($pb.Width * 0.6)))
         $cy = [int][Math]::Round($pb.Y + ($pb.Height * 0.5))
         $result += [PSCustomObject]@{ x = $cx; y = $cy; source = "uia-placeholder" }
-        $result += [PSCustomObject]@{ x = [int]($cx + 220); y = [int]($cy + 2); source = "uia-placeholder-right" }
-        Write-Dbg "UIA placeholder=($cx,$cy) w=$([Math]::Round($pb.Width,1)) h=$([Math]::Round($pb.Height,1))"
+        Write-Dbg "UIA placeholder=($cx,$cy) w=$([Math]::Round($pb.Width,1)) h=$([Math]::Round($pb.Height,1)) source=name:$ph"
+        return $result
       }
     }
 
-    # Fallback: xterm-helper-textarea (same as Codex, Electron-based)
-    $classCond = New-Object System.Windows.Automation.PropertyCondition(
-      [System.Windows.Automation.AutomationElement]::ClassNameProperty, 'xterm-helper-textarea')
-    $xterm = $root.FindFirst($scope, $classCond)
-    if ($xterm) {
-      $b = $xterm.Current.BoundingRectangle
-      if ($b.Width -gt 0 -and $b.Height -gt 0) {
-        $rawX = [int][Math]::Round($b.X + ($b.Width / 2.0))
-        $rawY = [int][Math]::Round($b.Y + ($b.Height / 2.0))
-        $rawInside = ($rawX -ge $winRect.Left -and $rawX -le $winRect.Right -and $rawY -ge $winRect.Top -and $rawY -le $winRect.Bottom)
-        $mappedX = $rawX; $mappedY = $rawY
-        if (-not $rawInside -and $winW -gt 0 -and $winH -gt 0) {
-          $rb = $root.Current.BoundingRectangle
-          if ($rb.Width -gt 0 -and $rb.Height -gt 0) {
-            $nx = [Math]::Max(0.0, [Math]::Min(1.0, ($rawX - $rb.X) / $rb.Width))
-            $ny = [Math]::Max(0.0, [Math]::Min(1.0, ($rawY - $rb.Y) / $rb.Height))
-            $mappedX = $winRect.Left + [int]($winW * $nx)
-            $mappedY = $winRect.Top + [int]($winH * $ny)
-          }
-        }
-        if ($mappedX -ne $rawX -or $mappedY -ne $rawY) {
-          $result += [PSCustomObject]@{ x = $mappedX; y = $mappedY; source = "uia-xterm-mapped" }
-        }
-        $result += [PSCustomObject]@{ x = $rawX; y = $rawY; source = "uia-xterm" }
-        Write-Dbg "UIA xterm=($rawX,$rawY)"
+    # Fallback anchor by stable button label.
+    # Click slightly above "Bypass permissions", where input area sits.
+    $anchorCond = New-Object System.Windows.Automation.PropertyCondition(
+      [System.Windows.Automation.AutomationElement]::NameProperty,
+      'Bypass permissions'
+    )
+    $swAnchor = [Diagnostics.Stopwatch]::StartNew()
+    $anchor = $root.FindFirst($scope, $anchorCond)
+    $swAnchor.Stop()
+    Write-Dbg "UIA anchor lookup 'Bypass permissions' took $($swAnchor.ElapsedMilliseconds)ms found=$([bool]$anchor)"
+    if ($anchor) {
+      $ab = $anchor.Current.BoundingRectangle
+      if ($ab.Width -gt 0 -and $ab.Height -gt 0) {
+        $ax = [int][Math]::Round($ab.X + [Math]::Min(70.0, ($ab.Width * 0.25)))
+        $ay = [int][Math]::Round($ab.Y - 40.0)
+        $result += [PSCustomObject]@{ x = $ax; y = $ay; source = "uia-anchor-bypass" }
+        Write-Dbg "UIA anchor bypass=($ax,$ay) button=($([int]$ab.X),$([int]$ab.Y),$([int]$ab.Width)x$([int]$ab.Height))"
+        return $result
       }
     }
 
-    # Note: do NOT add a geometric fallback here - coordinates would be stale at send time
+    # No geometric fallback here by design.
     return $result
   } catch {
     Write-Dbg "UIA point read failed: $($_.Exception.Message)"
@@ -304,7 +290,7 @@ function Read-AppendedText([string]$path, [int64]$offset) {
   } catch { return "" }
 }
 
-function Wait-ForCCDelivery([string]$sessionPath, [int64]$beforeBytes, [string]$probe, [int]$timeoutMs = 1800) {
+function Wait-ForCCDelivery([string]$sessionPath, [int64]$beforeBytes, [string]$probe, [int]$timeoutMs = 8000) {
   $started = Get-Date
   while (((Get-Date) - $started).TotalMilliseconds -lt $timeoutMs) {
     $path = $sessionPath
@@ -373,37 +359,14 @@ function Try-SendAt([IntPtr]$hWnd, [int]$x, [int]$y, [string]$text, [string]$ses
   Click-At $x $y
   try { Set-Clipboard -Value $text } catch { Write-Dbg "Clipboard failed: $($_.Exception.Message)" }
 
-  # Method 1: Shift+Insert
-  Send-ShiftIns
-  Start-Sleep -Milliseconds 140
-  Press-Key 0x0D  # Enter
-  Start-Sleep -Milliseconds $WaitAfterSendMs
-  if (Wait-ForCCDelivery $sessionPath $beforeBytes $probe) { return $true }
-  Write-Dbg "Method ShiftInsert failed at x=$x y=$y"
-
-  # Method 2: Ctrl+V
-  Click-At $x $y
+  # UIA-driven send: keep it simple and deterministic.
+  # No Shift+Insert / no direct type fallback for Cloud Code.
   Send-CtrlV
   Start-Sleep -Milliseconds 140
   Press-Key 0x0D
   Start-Sleep -Milliseconds $WaitAfterSendMs
   if (Wait-ForCCDelivery $sessionPath $beforeBytes $probe) { return $true }
   Write-Dbg "Method CtrlV failed at x=$x y=$y"
-
-  # Method 3: Direct type
-  Click-At $x $y
-  Send-CtrlA
-  Start-Sleep -Milliseconds 60
-  Press-Key 0x08  # Backspace
-  Start-Sleep -Milliseconds 80
-  Send-AsciiText $text
-  Start-Sleep -Milliseconds 120
-  Press-Key 0x0D
-  Start-Sleep -Milliseconds $WaitAfterSendMs
-  if (Wait-ForCCDelivery $sessionPath $beforeBytes $probe) { return $true }
-  Write-Dbg "Method TypeText failed at x=$x y=$y"
-
-  Press-Key 0x1B  # Esc
   Start-Sleep -Milliseconds 120
   return $false
 }
@@ -509,7 +472,6 @@ if ($Action -eq 'send_continue') {
   $oldClip = ''
   try { $oldClip = Get-Clipboard -Raw } catch {}
 
-  $startedAt = Get-Date
   $sessionFile = Get-LatestCCSessionFile
   $sessionPath = $null; $beforeBytes = 0
   if ($sessionFile) {
@@ -527,54 +489,22 @@ if ($Action -eq 'send_continue') {
   $h = $rect.Bottom - $rect.Top
   $midX = $rect.Left + [int]($w / 2)
 
-  # Attempt 0: no-click paste (Electron preserves focus on input when window is restored)
-  Write-Dbg "Attempt 0: no-click (focus + Esc + CtrlA + CtrlV + Enter)"
-  if (-not (Runtime-Exceeded $startedAt)) {
-    try { Set-Clipboard -Value $sendText } catch {}
-    Press-Key 0x1B          # Escape - dismiss any modal
-    Start-Sleep -Milliseconds 200
-    Send-CtrlA              # Select all existing text in input
-    Start-Sleep -Milliseconds 80
-    Send-CtrlV              # Paste
-    Start-Sleep -Milliseconds 250
-    Press-Key 0x0D          # Enter
-    Start-Sleep -Milliseconds $WaitAfterSendMs
-    if (Wait-ForCCDelivery $sessionPath $beforeBytes $probe) {
-      try { if ($oldClip) { Set-Clipboard -Value $oldClip } } catch {}
-      Write-Dbg "SUCCESS no-click"
-      Release-SendLock
-      Write-Output "SENT attempt=0 source=no-click delivered=1"
-      exit 0
-    }
-    Write-Dbg "No-click failed, trying coordinate-based"
-  }
-
-  # Build candidate list: UIA first, then saved, then bottom-anchored, then % fallbacks
+  # Build candidate list: UIA only (placeholder/Edit/xterm from current accessibility tree)
   $candidates = @()
   $uiaPoints = Get-UiaInputPoints $p.MainWindowHandle
   foreach ($u in $uiaPoints) {
     $candidates += [PSCustomObject]@{ source = [string]$u.source; abs = $true; x = [int]$u.x; y = [int]$u.y; xf = 0.0; yf = 0.0 }
   }
-  $saved = Load-Point
-  if ($saved) {
-    $sx = [double]$saved.x_factor; $sy = [double]$saved.y_factor
-    @($sx, (Clamp01($sx-0.03)), (Clamp01($sx+0.03))) | ForEach-Object {
-      $xf2 = $_
-      @($sy, (Clamp01($sy-0.03)), (Clamp01($sy+0.03))) | ForEach-Object {
-        $candidates += [PSCustomObject]@{ source = "saved"; abs = $false; x = 0; y = 0; xf = $xf2; yf = $_ }
-      }
-    }
+  if ($candidates.Count -eq 0) {
+    try { if ($oldClip) { Set-Clipboard -Value $oldClip } } catch {}
+    Write-Dbg "No UIA input candidates found; stopping without geometric fallbacks"
+    Release-SendLock
+    Write-Output "UIA_INPUT_NOT_FOUND"
+    exit 13
   }
-  # Bottom-anchored: input field is ALWAYS near the bottom; fixed px offset is more reliable than %
-  @(55, 75, 95, 40, 115, 130) | ForEach-Object {
-    $candidates += [PSCustomObject]@{ source = "bottom-${_}px"; abs = $true; x = $midX; y = $rect.Bottom - [int]$_; xf = 0.0; yf = 0.0 }
-  }
-  # Last resort: percentage-based (less reliable if window is on secondary monitor)
-  @(
-    @(0.50, 0.95), @(0.50, 0.92), @(0.50, 0.88), @(0.50, 0.85)
-  ) | ForEach-Object {
-    $candidates += [PSCustomObject]@{ source = "pct-$($_[0])-$($_[1])"; abs = $false; x = 0; y = 0; xf = $_[0]; yf = $_[1] }
-  }
+
+  # Runtime budget should measure send attempts, not UIA tree lookup time.
+  $startedAt = Get-Date
 
   Write-Dbg "Candidates: $(($candidates | ForEach-Object { $_.source }) -join ', ')"
 
@@ -593,12 +523,20 @@ if ($Action -eq 'send_continue') {
     Write-Dbg "Attempt=$attempt source=$($pt.source) x=$x y=$y"
 
     if (Try-SendAt $p.MainWindowHandle $x $y $sendText $sessionPath $beforeBytes $probe $startedAt) {
-      # Save relative points (not bottom-anchored abs which are always computed fresh)
-      if (-not $isAbs) { Save-Point $pt.xf $pt.yf }
       try { if ($oldClip) { Set-Clipboard -Value $oldClip } } catch {}
       Write-Dbg "SUCCESS attempt=$attempt source=$($pt.source)"
       Release-SendLock
       Write-Output "SENT attempt=$attempt source=$($pt.source) x=$x y=$y pid=$($p.Id) delivered=1"
+      exit 0
+    }
+
+    # Claude Code may append queue operations to JSONL with a long delay.
+    # For UIA placeholder clicks, avoid duplicate sends and trust delivery.
+    if ($pt.source -eq 'uia-placeholder' -or $pt.source -eq 'uia-anchor-bypass') {
+      try { if ($oldClip) { Set-Clipboard -Value $oldClip } } catch {}
+      Write-Dbg "Trusted success attempt=$attempt source=$($pt.source) (no immediate JSONL append)"
+      Release-SendLock
+      Write-Output "SENT attempt=$attempt source=$($pt.source) x=$x y=$y pid=$($p.Id) delivered=trusted"
       exit 0
     }
   }
