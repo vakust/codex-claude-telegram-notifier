@@ -23,7 +23,7 @@ $chat = $env:TG_CHAT_ID
 if (-not $bot -or -not $chat) { Write-HookLog "Missing TG creds"; exit 0 }
 
 $sender = "c:\001_dev\notifier\scripts\send-telegram.ps1"
-$menu = '{"keyboard":[[{"text":"Status"},{"text":"Continue"},{"text":"CC: Continue"}],[{"text":"Fix+Retest"},{"text":"CC: Fix+Retest"},{"text":"Stop"}],[{"text":"Set Custom"},{"text":"Send Custom"},{"text":"CC: Custom"}],[{"text":"Show Custom"},{"text":"Clear Custom"}],[{"text":"Last Text"},{"text":"CC: Last Text"},{"text":"Bind Point"},{"text":"CC: Bind"}]],"resize_keyboard":true,"is_persistent":true}'
+$menu = '{"keyboard":[[{"text":"Continue"},{"text":"CC: Continue"}],[{"text":"Fix+Retest"},{"text":"CC: Fix+Retest"}],[{"text":"Send Custom"},{"text":"CC: Custom"}],[{"text":"Last Text"},{"text":"CC: Last Text"}],[{"text":"Bind Point"},{"text":"CC: Bind"}],[{"text":"Shot Codex"},{"text":"Shot CC"}],[{"text":"Set Custom"},{"text":"Show Custom"},{"text":"Clear Custom"}],[{"text":"Status"},{"text":"Stop"}]],"resize_keyboard":true,"is_persistent":true}'
 
 function Send-Tg([string]$text) {
   & $sender -BotToken $bot -ChatId $chat -Text $text -ReplyMarkup $menu
