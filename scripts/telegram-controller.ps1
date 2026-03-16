@@ -869,6 +869,18 @@ function Save-CcCompletionWatchState {
   } | ConvertTo-Json | Set-Content -Path $ccCompletionWatchPath -Encoding UTF8
 }
 
+function Get-CcCompletionTimestampFromKey([string]$key) {
+  if ([string]::IsNullOrWhiteSpace($key)) { return $null }
+  $head = $key
+  $pipe = $key.IndexOf('|')
+  if ($pipe -gt 0) { $head = $key.Substring(0, $pipe) }
+  try {
+    return [DateTime]::Parse([string]$head).ToUniversalTime()
+  } catch {
+    return $null
+  }
+}
+
 $CcDebounceSec = 4   # wait this long after end_turn before notifying (skips intermediate tool steps)
 
 function Check-CcCompletionWatcher {
@@ -892,6 +904,14 @@ function Check-CcCompletionWatcher {
   # No change from last confirmed notification
   if ($latest.key -eq $script:ccLastCompletionKey) {
     $script:ccPendingKey = ""   # reset pending if it was stale
+    return
+  }
+
+  # Ignore stale historical keys that can sporadically reappear in JSONL scan.
+  $prevTs = Get-CcCompletionTimestampFromKey -key $script:ccLastCompletionKey
+  if ($prevTs -ne $null -and $latest.timestamp -lt $prevTs) {
+    if ($script:ccPendingKey -eq $latest.key) { $script:ccPendingKey = "" }
+    Write-CtrlLog "CC watcher ignored stale key=$($latest.key) prev=$($script:ccLastCompletionKey)"
     return
   }
 
@@ -954,11 +974,17 @@ Load-CcCompletionWatchState
 # Startup: silently sync CC watcher baseline to avoid notifying on old completions after restart
 $_ccNow = Get-LatestCCFinalAssistant
 if ($_ccNow -and $_ccNow.key -ne $script:ccLastCompletionKey) {
-  $script:ccLastCompletionKey = $_ccNow.key
-  $script:ccWatchInitialized  = $true
-  $script:ccPendingKey = ""
-  Save-CcCompletionWatchState
-  Write-CtrlLog "CC startup sync key=$($_ccNow.key)"
+  $existingCcTs = Get-CcCompletionTimestampFromKey -key $script:ccLastCompletionKey
+  $newCcTs = $_ccNow.timestamp
+  if ($existingCcTs -ne $null -and $newCcTs -lt $existingCcTs) {
+    Write-CtrlLog "CC startup sync ignored stale key=$($_ccNow.key) prev=$($script:ccLastCompletionKey)"
+  } else {
+    $script:ccLastCompletionKey = $_ccNow.key
+    $script:ccWatchInitialized  = $true
+    $script:ccPendingKey = ""
+    Save-CcCompletionWatchState
+    Write-CtrlLog "CC startup sync key=$($_ccNow.key)"
+  }
 }
 Write-CtrlLog "Controller started pid=$PID"
 if ([string]::IsNullOrWhiteSpace($OneShotAction)) {
