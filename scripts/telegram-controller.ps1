@@ -35,6 +35,7 @@ if (-not (Test-Path $stateDir)) { New-Item -ItemType Directory -Force -Path $sta
 $commands = Get-Content $CommandsPath -Raw | ConvertFrom-Json
 $runScript = "c:\001_dev\notifier\scripts\run-with-notify.ps1"
 $sender = "c:\001_dev\notifier\scripts\send-telegram.ps1"
+$photoSender = "c:\001_dev\notifier\scripts\send-telegram-photo.ps1"
 $bridge = "c:\001_dev\notifier\scripts\codex-bridge.ps1"
 $codexCli = "codex"
 $codexCliLastMessagePath = "c:\001_dev\notifier\state\cli-last-message.txt"
@@ -44,7 +45,8 @@ $ccBridge = "c:\001_dev\notifier\scripts\cc-bridge.ps1"
 $ccSessionsRoot = Join-Path $env:USERPROFILE ".claude\projects"
 $ccCompletionWatchPath = "c:\001_dev\notifier\state\cc-completion-watch.json"
 $ccHookNotifiedPath    = "c:\001_dev\notifier\state\cc-hook-notified.json"
-$menu = '{"keyboard":[[{"text":"Continue"},{"text":"CC: Continue"}],[{"text":"Fix+Retest"},{"text":"CC: Fix+Retest"}],[{"text":"Send Custom"},{"text":"CC: Custom"}],[{"text":"Last Text"},{"text":"CC: Last Text"}],[{"text":"Bind Point"},{"text":"CC: Bind"}],[{"text":"Set Custom"},{"text":"Show Custom"},{"text":"Clear Custom"}],[{"text":"Status"},{"text":"Stop"}]],"resize_keyboard":true,"is_persistent":true}'
+$screenshotDir = "c:\001_dev\notifier\state\screenshots"
+$menu = '{"keyboard":[[{"text":"Continue"},{"text":"CC: Continue"}],[{"text":"Fix+Retest"},{"text":"CC: Fix+Retest"}],[{"text":"Send Custom"},{"text":"CC: Custom"}],[{"text":"Last Text"},{"text":"CC: Last Text"}],[{"text":"Bind Point"},{"text":"CC: Bind"}],[{"text":"Shot Codex"},{"text":"Shot CC"}],[{"text":"Set Custom"},{"text":"Show Custom"},{"text":"Clear Custom"}],[{"text":"Status"},{"text":"Stop"}]],"resize_keyboard":true,"is_persistent":true}'
 
 $script:watchInitialized = $false
 $script:lastCompletionKey = ""
@@ -60,9 +62,19 @@ $script:ccLastCompletionCheck = [DateTime]::MinValue
 
 $ActionAText = "If everything is clear and you know what to do next, continue working and testing in this thread. Provide brief status updates."
 $ActionCText = "Continue testing. If you find errors, fix them, then run tests again. Keep working until all bugs for this task are fixed. Provide brief status updates."
+$script:ScreenshotApiReady = $false
+
+if (-not (Test-Path $screenshotDir)) {
+  New-Item -ItemType Directory -Force -Path $screenshotDir | Out-Null
+}
 
 function Send-Tg([string]$text) {
   & $sender -BotToken $bot -ChatId $chat -Text $text -ReplyMarkup $menu
+  return ($LASTEXITCODE -eq 0)
+}
+
+function Send-TgPhoto([string]$photoPath, [string]$caption) {
+  & $photoSender -BotToken $bot -ChatId $chat -PhotoPath $photoPath -Caption $caption -ReplyMarkup $menu
   return ($LASTEXITCODE -eq 0)
 }
 
@@ -176,12 +188,14 @@ function Send-Help {
 <b>Codex Desktop buttons:</b>
 - Continue / Fix+Retest: send prompt to active Codex thread
 - Bind Point: save mouse pos over Codex input
+- Shot Codex: send screenshot of Codex window
 
 <b>Claude Code (CC) buttons:</b>
 - CC: Continue / CC: Fix+Retest: send prompt to Claude Code
 - CC: Custom: send saved custom prompt to Claude Code
 - CC: Last Text: show last CC assistant reply
 - CC: Bind: save mouse pos over Claude Code input
+- Shot CC: send screenshot of Claude Code window
 
 <b>Common:</b>
 - Set Custom -&gt; Send Custom: save and send custom prompt (Codex)
@@ -563,6 +577,133 @@ function Bind-InputPoint {
 
 # ─── CC (Claude Code) functions ───────────────────────────────────────────────
 
+function Ensure-ScreenshotApi {
+  if ($script:ScreenshotApiReady) { return $true }
+  try {
+    Add-Type -AssemblyName System.Drawing
+  } catch {
+    Write-CtrlLog "Screenshot API init failed (System.Drawing): $($_.Exception.Message)"
+    return $false
+  }
+
+  if (-not ("NotifierWinApi" -as [type])) {
+    try {
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public class NotifierWinApi {
+  [StructLayout(LayoutKind.Sequential)]
+  public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
+  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
+  [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hWnd);
+  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+  [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr hWnd, IntPtr hdcBlt, uint nFlags);
+}
+"@
+    } catch {
+      Write-CtrlLog "Screenshot API init failed (WinApi type): $($_.Exception.Message)"
+      return $false
+    }
+  }
+  $script:ScreenshotApiReady = $true
+  return $true
+}
+
+function Get-TargetWindowProcess([ValidateSet('codex','cc')][string]$target) {
+  if ($target -eq 'codex') {
+    return Get-Process -Name "Codex" -ErrorAction SilentlyContinue |
+      Where-Object { $_.MainWindowHandle -ne 0 -and $_.MainWindowHandle -ne [IntPtr]::Zero } |
+      Select-Object -First 1
+  }
+  return Get-Process -Name "claude" -ErrorAction SilentlyContinue |
+    Where-Object { $_.MainWindowHandle -ne 0 -and $_.MainWindowHandle -ne [IntPtr]::Zero } |
+    Sort-Object WorkingSet64 -Descending |
+    Select-Object -First 1
+}
+
+function Save-WindowScreenshot([IntPtr]$hWnd, [string]$outPath) {
+  if (-not (Ensure-ScreenshotApi)) { return $false }
+  $rect = New-Object NotifierWinApi+RECT
+  if (-not [NotifierWinApi]::GetWindowRect($hWnd, [ref]$rect)) { return $false }
+  $w = $rect.Right - $rect.Left
+  $h = $rect.Bottom - $rect.Top
+  if ($w -le 0 -or $h -le 0) { return $false }
+
+  $bmp = $null
+  $gfx = $null
+  $hDc = [IntPtr]::Zero
+  try {
+    $bmp = New-Object System.Drawing.Bitmap($w, $h)
+    $gfx = [System.Drawing.Graphics]::FromImage($bmp)
+    $hDc = $gfx.GetHdc()
+    $printed = [NotifierWinApi]::PrintWindow($hWnd, $hDc, 2)
+    $gfx.ReleaseHdc($hDc)
+    $hDc = [IntPtr]::Zero
+
+    if (-not $printed) {
+      $gfx.CopyFromScreen($rect.Left, $rect.Top, 0, 0, $bmp.Size, [System.Drawing.CopyPixelOperation]::SourceCopy)
+    }
+    $bmp.Save($outPath, [System.Drawing.Imaging.ImageFormat]::Png)
+    return $true
+  } catch {
+    Write-CtrlLog "Screenshot capture failed: $($_.Exception.Message)"
+    return $false
+  } finally {
+    if ($hDc -ne [IntPtr]::Zero -and $gfx) { $gfx.ReleaseHdc($hDc) }
+    if ($gfx) { $gfx.Dispose() }
+    if ($bmp) { $bmp.Dispose() }
+  }
+}
+
+function Send-WindowScreenshot([ValidateSet('codex','cc')][string]$target) {
+  $label = $(if ($target -eq 'codex') { 'Shot Codex' } else { 'Shot CC' })
+  $windowName = $(if ($target -eq 'codex') { 'Codex' } else { 'Claude Code' })
+  $tmpPath = ""
+
+  try {
+    $p = Get-TargetWindowProcess -target $target
+    if (-not $p) {
+      Send-Tg "$label failed: $windowName window not found."
+      return
+    }
+    $hWnd = [IntPtr]$p.MainWindowHandle
+
+    if (-not (Ensure-ScreenshotApi)) {
+      Send-Tg "$label failed: screenshot API is not available."
+      return
+    }
+
+    if ([NotifierWinApi]::IsIconic($hWnd)) {
+      [NotifierWinApi]::ShowWindow($hWnd, 9) | Out-Null
+      Start-Sleep -Milliseconds 220
+    }
+
+    $stamp = (Get-Date).ToString('yyyyMMdd-HHmmss')
+    $tmpPath = Join-Path $screenshotDir "$target-$stamp.png"
+    $saved = Save-WindowScreenshot -hWnd $hWnd -outPath $tmpPath
+    if (-not $saved -or -not (Test-Path $tmpPath)) {
+      Send-Tg "$label failed: could not capture screenshot."
+      return
+    }
+
+    $caption = "[${target}] screenshot $(Get-Date -Format 'HH:mm:ss')"
+    $ok = Send-TgPhoto -photoPath $tmpPath -caption $caption
+    if ($ok) {
+      Write-CtrlLog "$label sent: window screenshot"
+    } else {
+      Write-CtrlLog "$label failed: Telegram photo send error"
+      Send-Tg "$label failed: Telegram sendPhoto error."
+    }
+  } catch {
+    Write-CtrlLog "$label exception: $($_.Exception.Message)"
+    Send-Tg "$label failed: $($_.Exception.Message)"
+  } finally {
+    if (-not [string]::IsNullOrWhiteSpace($tmpPath)) {
+      Remove-Item $tmpPath -Force -ErrorAction SilentlyContinue
+    }
+  }
+}
+
 function Send-CcActionText([string]$label, [string]$prompt) {
   Write-CtrlLog "CC Action: $label"
   if (-not (Can-RunAction)) {
@@ -877,7 +1018,7 @@ while ($true) {
         if (Is-CustomAwaitMode) {
           $reserved = @(
             "status","continue","fix+retest","fix+test","action a","action b","action c",
-            "set custom","send custom","show custom","clear custom","last text","bind point","stop",
+            "set custom","send custom","show custom","clear custom","last text","bind point","shot codex","shot cc","stop",
             "/status","/c_continue","/c_retest","/c_fix","/lastlog","/stop",
             "cc: continue","cc:continue","/cc_continue","cc: fix+retest","cc:fix+retest",
             "cc: custom","cc:custom","cc: last text","cc:last text","cc: bind","cc:bind"
@@ -963,6 +1104,10 @@ while ($true) {
           "last text" { Send-LastText; continue }
           "last log" { Send-LastText; continue }
           "bind point" { Bind-InputPoint; continue }
+          "shot codex" { Send-WindowScreenshot -target codex; continue }
+          "shot: codex" { Send-WindowScreenshot -target codex; continue }
+          "shot cc" { Send-WindowScreenshot -target cc; continue }
+          "shot: cc" { Send-WindowScreenshot -target cc; continue }
           "/lastlog" { Send-LastText; continue }
           "stop" { Stop-CurrentTask; continue }
           "/stop" { Stop-CurrentTask; continue }
@@ -994,7 +1139,7 @@ while ($true) {
           "cc:last text"  { Send-CcLastText; continue }
           "cc: bind" { Bind-CcInputPoint; continue }
           "cc:bind"  { Bind-CcInputPoint; continue }
-          default { Send-Tg "Use buttons or /help: Status, Continue, Fix+Retest, Set/Send/Show/Clear Custom, Last Text, Bind Point, Stop | CC: Continue, CC: Fix+Retest, CC: Custom, CC: Last Text, CC: Bind"; continue }
+          default { Send-Tg "Use buttons or /help: Status, Continue, Fix+Retest, Set/Send/Show/Clear Custom, Last Text, Bind Point, Shot Codex, Shot CC, Stop | CC: Continue, CC: Fix+Retest, CC: Custom, CC: Last Text, CC: Bind"; continue }
         }
       }
     }
