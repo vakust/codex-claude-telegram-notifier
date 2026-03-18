@@ -23,6 +23,14 @@ With this notifier you can:
 - Windows + PowerShell (current implementation).
 - Not implemented for macOS/Linux yet.
 
+## Next product track (mobile companion)
+Planned iOS/Android companion direction and implementation plan:
+
+1. `docs/mobile/PRODUCT_DIRECTION.md`
+2. `docs/mobile/MOBILE_MVP_SPEC.md`
+3. `docs/mobile/MOBILE_API_CONTRACT.md`
+4. `docs/mobile/MOBILE_DELIVERY_PLAN.md`
+
 ## Quick start
 1. Create a Telegram bot with BotFather and copy the token.
 2. Bootstrap local config:
