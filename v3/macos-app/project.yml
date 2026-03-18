@@ -1,0 +1,21 @@
+name: NotifierV3Mac
+options:
+  minimumXcodeGenVersion: 2.38.0
+
+settings:
+  base:
+    PRODUCT_BUNDLE_IDENTIFIER: com.vakust.notifierv3.mac
+    SWIFT_VERSION: 5.10
+    MACOSX_DEPLOYMENT_TARGET: "13.0"
+
+targets:
+  NotifierV3Mac:
+    type: application
+    platform: macOS
+    sources:
+      - NotifierV3Mac
+    settings:
+      base:
+        INFOPLIST_FILE: NotifierV3Mac/Info.plist
+    scheme:
+      testTargets: []
