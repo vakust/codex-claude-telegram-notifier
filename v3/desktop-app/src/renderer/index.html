@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Notifier v3 Control Center</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="top">
+      <h1>Notifier v3</h1>
+      <p>API-first desktop control center</p>
+    </header>
+
+    <main class="grid">
+      <section class="card">
+        <h2>Connection</h2>
+        <label>
+          API URL
+          <input id="apiUrl" type="text" />
+        </label>
+        <label>
+          Mobile Token
+          <input id="token" type="password" />
+        </label>
+        <button id="refresh">Refresh Feed</button>
+      </section>
+
+      <section class="card">
+        <h2>Quick Actions</h2>
+        <div class="actions">
+          <button data-target="codex" data-action="continue">Codex Continue</button>
+          <button data-target="cc" data-action="continue">CC Continue</button>
+          <button data-target="codex" data-action="fix_retest">Codex Fix+Retest</button>
+          <button data-target="cc" data-action="fix_retest">CC Fix+Retest</button>
+          <button data-target="codex" data-action="shot">Shot Codex</button>
+          <button data-target="cc" data-action="shot">Shot CC</button>
+        </div>
+      </section>
+
+      <section class="card feed">
+        <h2>Event Feed</h2>
+        <pre id="feedOut">No data yet.</pre>
+      </section>
+    </main>
+
+    <footer>
+      <span id="status">Idle.</span>
+    </footer>
+
+    <script src="./renderer.js"></script>
+  </body>
+</html>

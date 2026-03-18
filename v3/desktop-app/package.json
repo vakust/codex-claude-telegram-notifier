@@ -1,0 +1,13 @@
+{
+  "name": "notifier-v3-desktop-app",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Desktop control center for Notifier v3 (API-first).",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "^34.0.0"
+  }
+}
