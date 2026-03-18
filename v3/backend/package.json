@@ -1,0 +1,14 @@
+{
+  "name": "notifier-v3-backend-core",
+  "version": "0.1.0",
+  "private": true,
+  "description": "API-first broker skeleton for Notifier v3 (no Telegram replacement yet).",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
