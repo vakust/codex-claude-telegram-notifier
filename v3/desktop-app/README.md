@@ -14,6 +14,8 @@ Electron desktop shell for the API-first control center.
 ```powershell
 cd C:\001_dev\notifier\v3\desktop-app
 npm install
+npm run check
+npm run smoke
 npm start
 ```
 
@@ -21,6 +23,8 @@ Environment overrides:
 
 1. `V3_API_URL` (default: `http://127.0.0.1:8787`)
 2. `V3_MOBILE_TOKEN` (default: `dev-mobile-token`)
+
+`npm run smoke` requires a running local backend on the configured `V3_API_URL`.
 
 ## Notes
 

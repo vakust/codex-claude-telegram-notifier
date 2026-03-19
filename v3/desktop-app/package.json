@@ -5,7 +5,9 @@
   "description": "Desktop control center for Notifier v3 (API-first).",
   "main": "src/main.js",
   "scripts": {
-    "start": "electron ."
+    "start": "electron .",
+    "smoke": "node scripts/smoke.js",
+    "check": "node --check src/main.js && node --check src/preload.js && node --check src/renderer/renderer.js && node --check src/api-client.js && node --check scripts/smoke.js"
   },
   "devDependencies": {
     "electron": "^34.0.0"
