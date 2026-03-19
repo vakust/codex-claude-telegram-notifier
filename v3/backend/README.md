@@ -46,6 +46,13 @@ curl -X POST http://127.0.0.1:8787/v1/admin/pair/code `
   -H "Authorization: Bearer dev-admin-token"
 ```
 
+End-to-end smoke:
+
+```powershell
+cd C:\001_dev\notifier\v3\backend
+npm run smoke
+```
+
 ## Notes
 
 1. Storage is in-memory only (no persistence yet).
