@@ -27,6 +27,25 @@ Build artifact:
 
 - `C:\001_dev\notifier\v3\android-app\app\build\outputs\apk\debug\app-debug.apk`
 
+## Real USB phone (recommended after emulator)
+
+1. On Android phone enable Developer options + USB debugging.
+2. Connect via USB and approve "Allow USB debugging" prompt on the phone.
+3. Start local backend (port `8787` by default).
+4. Deploy and launch:
+
+```powershell
+cd C:\001_dev\notifier\v3\android-app
+.\scripts\deploy-device.ps1
+```
+
+This script:
+
+- builds `app-debug.apk`
+- installs it on authorized USB device
+- configures `adb reverse tcp:8787 tcp:8787`
+- starts the app automatically
+
 ## Notes
 
 - This is a bootstrap implementation to validate end-to-end API flow.
