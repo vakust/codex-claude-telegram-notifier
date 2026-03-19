@@ -26,6 +26,13 @@ Environment overrides:
 
 `npm run smoke` requires a running local backend on the configured `V3_API_URL`.
 
+One-command local smoke (PowerShell):
+
+```powershell
+cd C:\001_dev\notifier\v3\desktop-app
+.\scripts\local-smoke.ps1
+```
+
 ## Notes
 
 1. This is a skeleton for iterative UX and reliability work.
