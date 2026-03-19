@@ -16,13 +16,21 @@ class InMemoryStore {
     this.commands = [];
     this.acks = [];
     this.pairCodes = new Map();
+    this.mobileSessionsByAccess = new Map();
+    this.mobileSessionsByRefresh = new Map();
   }
 
-  createPairCode(ttlSec = 300) {
+  createPairCode(ttlSec = 300, workspaceId = "ws_local_dev") {
     const code = `${Math.floor(100 + Math.random() * 900)}-${Math.floor(100 + Math.random() * 900)}`;
     const expiresAt = Date.now() + ttlSec * 1000;
-    this.pairCodes.set(code, { code, createdAt: nowIso(), expiresAt });
-    return { code, createdAt: nowIso(), expiresAt: new Date(expiresAt).toISOString() };
+    const payload = {
+      code,
+      workspace_id: workspaceId,
+      createdAt: nowIso(),
+      expiresAt
+    };
+    this.pairCodes.set(code, payload);
+    return { code, workspace_id: workspaceId, createdAt: nowIso(), expiresAt: new Date(expiresAt).toISOString() };
   }
 
   consumePairCode(code) {
@@ -34,6 +42,64 @@ class InMemoryStore {
     }
     this.pairCodes.delete(code);
     return pair;
+  }
+
+  createMobileSession(workspaceId = "ws_local_dev") {
+    const accessToken = `mob_${crypto.randomBytes(16).toString("hex")}`;
+    const refreshToken = `rfr_${crypto.randomBytes(20).toString("hex")}`;
+    const now = Date.now();
+    const accessExpiresAt = now + 15 * 60 * 1000;
+    const refreshExpiresAt = now + 7 * 24 * 60 * 60 * 1000;
+    const session = {
+      session_id: nextId("mob"),
+      workspace_id: workspaceId,
+      access_token: accessToken,
+      refresh_token: refreshToken,
+      access_expires_at: accessExpiresAt,
+      refresh_expires_at: refreshExpiresAt,
+      created_at: nowIso()
+    };
+    this.mobileSessionsByAccess.set(accessToken, session);
+    this.mobileSessionsByRefresh.set(refreshToken, session);
+    return {
+      workspace_id: session.workspace_id,
+      access_token: session.access_token,
+      refresh_token: session.refresh_token,
+      access_expires_at: new Date(accessExpiresAt).toISOString(),
+      refresh_expires_at: new Date(refreshExpiresAt).toISOString()
+    };
+  }
+
+  refreshMobileSession(refreshToken) {
+    const existing = this.mobileSessionsByRefresh.get(refreshToken);
+    if (!existing) return null;
+    if (Date.now() > existing.refresh_expires_at) {
+      this.mobileSessionsByRefresh.delete(refreshToken);
+      this.mobileSessionsByAccess.delete(existing.access_token);
+      return null;
+    }
+    this.mobileSessionsByAccess.delete(existing.access_token);
+    const nextAccess = `mob_${crypto.randomBytes(16).toString("hex")}`;
+    existing.access_token = nextAccess;
+    existing.access_expires_at = Date.now() + 15 * 60 * 1000;
+    this.mobileSessionsByAccess.set(nextAccess, existing);
+    return {
+      workspace_id: existing.workspace_id,
+      access_token: existing.access_token,
+      refresh_token: existing.refresh_token,
+      access_expires_at: new Date(existing.access_expires_at).toISOString(),
+      refresh_expires_at: new Date(existing.refresh_expires_at).toISOString()
+    };
+  }
+
+  isValidMobileAccessToken(token) {
+    const session = this.mobileSessionsByAccess.get(token);
+    if (!session) return false;
+    if (Date.now() > session.access_expires_at) {
+      this.mobileSessionsByAccess.delete(token);
+      return false;
+    }
+    return true;
   }
 
   addEvent(input) {

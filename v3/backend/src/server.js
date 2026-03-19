@@ -51,7 +51,7 @@ function authToken(req) {
 function requireAuth(req, res, kind) {
   const token = authToken(req);
   if (kind === "agent" && token === AGENT_TOKEN) return true;
-  if (kind === "mobile" && token === MOBILE_TOKEN) return true;
+  if (kind === "mobile" && (token === MOBILE_TOKEN || store.isValidMobileAccessToken(token))) return true;
   if (kind === "admin" && token === ADMIN_TOKEN) return true;
   sendJson(res, 401, { ok: false, error: "UNAUTHORIZED" });
   return false;
@@ -76,8 +76,15 @@ const server = http.createServer(async (req, res) => {
     // Bootstrap helper for local tests
     if (method === "POST" && path === "/v1/admin/pair/code") {
       if (!requireAuth(req, res, "admin")) return;
-      const code = store.createPairCode(300);
-      return sendJson(res, 200, { ok: true, pair_code: code.code, expires_at: code.expiresAt });
+      const body = await parseBody(req);
+      const workspaceId = String(body.workspace_id || "ws_local_dev");
+      const code = store.createPairCode(300, workspaceId);
+      return sendJson(res, 200, {
+        ok: true,
+        pair_code: code.code,
+        workspace_id: code.workspace_id,
+        expires_at: code.expiresAt
+      });
     }
 
     if (method === "POST" && path === "/v1/mobile/pair/start") {
@@ -87,12 +94,28 @@ const server = http.createServer(async (req, res) => {
       if (!pair) {
         return sendJson(res, 400, { ok: false, error: "PAIR_CODE_INVALID_OR_EXPIRED" });
       }
+      const session = store.createMobileSession(pair.workspace_id || "ws_local_dev");
       return sendJson(res, 200, {
         ok: true,
-        workspace_id: "ws_local_dev",
-        access_token: MOBILE_TOKEN,
-        refresh_token: `refresh_${Date.now()}`
+        workspace_id: session.workspace_id,
+        access_token: session.access_token,
+        refresh_token: session.refresh_token,
+        access_expires_at: session.access_expires_at,
+        refresh_expires_at: session.refresh_expires_at
       });
+    }
+
+    if (method === "POST" && path === "/v1/mobile/auth/refresh") {
+      const body = await parseBody(req);
+      const refreshToken = String(body.refresh_token || "");
+      if (!refreshToken) {
+        return sendJson(res, 400, { ok: false, error: "refresh_token_required" });
+      }
+      const session = store.refreshMobileSession(refreshToken);
+      if (!session) {
+        return sendJson(res, 401, { ok: false, error: "refresh_token_invalid_or_expired" });
+      }
+      return sendJson(res, 200, { ok: true, ...session });
     }
 
     if (method === "POST" && path === "/v1/agents/events") {
@@ -147,7 +170,8 @@ const server = http.createServer(async (req, res) => {
         events: store.events.length,
         commands: store.commands.length,
         pending_commands: store.commands.filter((c) => c.status === "accepted").length,
-        acks: store.acks.length
+        acks: store.acks.length,
+        mobile_sessions: store.mobileSessionsByAccess.size
       });
     }
 

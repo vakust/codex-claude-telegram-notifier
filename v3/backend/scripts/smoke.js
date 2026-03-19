@@ -73,9 +73,14 @@ async function run() {
       method: "POST",
       body: { pair_code: pair.pair_code }
     });
+    const refreshed = await call("/v1/mobile/auth/refresh", {
+      method: "POST",
+      body: { refresh_token: pairStart.refresh_token }
+    });
+    const mobileAccessToken = refreshed.access_token;
     const command = await call("/v1/mobile/commands", {
       method: "POST",
-      token: TOKENS.mobile,
+      token: mobileAccessToken,
       body: {
         target: "codex",
         action: "continue",
@@ -104,7 +109,7 @@ async function run() {
       }
     });
     const feed = await call("/v1/mobile/feed?limit=10", {
-      token: TOKENS.mobile
+      token: mobileAccessToken
     });
 
     if (!pair.ok || !pairStart.ok || !command.ok || !ack.ok || !event.ok || !feed.ok) {
@@ -122,6 +127,9 @@ async function run() {
         {
           ok: true,
           pair_code: pair.pair_code,
+          workspace_id: pairStart.workspace_id,
+          refresh_token_prefix: String(pairStart.refresh_token || "").slice(0, 12),
+          access_token_prefix: String(mobileAccessToken || "").slice(0, 12),
           command_id: command.command_id,
           pending_count: pending.items.length,
           ack_status: ack.command.status,

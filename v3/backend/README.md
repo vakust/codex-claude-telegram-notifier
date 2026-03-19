@@ -8,11 +8,12 @@ It is intentionally minimal and isolated from the existing Telegram controller.
 
 1. Health endpoint
 2. Pair-code flow (admin create -> mobile consume)
-3. Agent event ingestion
-4. Mobile command submission
-5. Agent pending-command polling
-6. Agent command acknowledgements
-7. Mobile event feed
+3. Mobile refresh-token flow (`/v1/mobile/auth/refresh`)
+4. Agent event ingestion
+5. Mobile command submission
+6. Agent pending-command polling
+7. Agent command acknowledgements
+8. Mobile event feed
 
 ## Start
 
