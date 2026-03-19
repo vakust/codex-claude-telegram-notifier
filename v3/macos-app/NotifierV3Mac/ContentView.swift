@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ContentView: View {
     @ObservedObject var viewModel: FeedViewModel
+    @State private var pairCode: String = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -12,15 +13,31 @@ struct ContentView: View {
             HStack {
                 Text("API URL")
                     .frame(width: 90, alignment: .leading)
-                TextField("http://127.0.0.1:8787", text: $viewModel.apiURL)
+                TextField("http://127.0.0.1:8787", text: Binding(
+                    get: { viewModel.apiURL },
+                    set: { viewModel.updateApiURL($0) }
+                ))
                     .textFieldStyle(.roundedBorder)
             }
 
             HStack {
                 Text("Token")
                     .frame(width: 90, alignment: .leading)
-                SecureField("dev-mobile-token", text: $viewModel.token)
+                TextField("dev-mobile-token", text: Binding(
+                    get: { viewModel.token },
+                    set: { viewModel.updateToken($0) }
+                ))
                     .textFieldStyle(.roundedBorder)
+            }
+
+            HStack {
+                Text("Pair Code")
+                    .frame(width: 90, alignment: .leading)
+                TextField("123-456", text: $pairCode)
+                    .textFieldStyle(.roundedBorder)
+                Button("Pair Device") {
+                    Task { await viewModel.pairDevice(pairCode: pairCode) }
+                }
             }
 
             HStack(spacing: 8) {
@@ -39,6 +56,9 @@ struct ContentView: View {
             Text(viewModel.statusText)
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            Text("Workspace: \(viewModel.workspaceId.isEmpty ? "(not paired)" : viewModel.workspaceId)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
 
             List(viewModel.feedItems) { item in
                 VStack(alignment: .leading, spacing: 3) {
@@ -52,7 +72,7 @@ struct ContentView: View {
         }
         .padding(14)
         .task {
-            await viewModel.refreshFeed()
+            await viewModel.bootstrap()
         }
     }
 }

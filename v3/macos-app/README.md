@@ -3,7 +3,9 @@
 macOS companion app for API-first Notifier V3.
 
 Current scope:
-- Configure backend URL + mobile token.
+- Configure and persist backend URL + access token.
+- Pair device (`POST /v1/mobile/pair/start`) and save workspace.
+- Refresh access token (`POST /v1/mobile/auth/refresh`) on startup / 401.
 - Read feed (`GET /v1/mobile/feed`).
 - Send quick actions (`POST /v1/mobile/commands`) for Codex and Cloud Code.
 
@@ -16,4 +18,5 @@ Current scope:
 ## Notes
 
 - This is a bootstrap shell for product direction validation.
-- Secure token storage (Keychain) is planned in hardening.
+- Token currently uses `UserDefaults`; move to Keychain in hardening.
+- Telegram production path is unchanged.
