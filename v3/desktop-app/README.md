@@ -7,7 +7,7 @@ Electron desktop shell for the API-first control center.
 1. Main window shell with persisted API/mobile token
 2. Pair device flow (`POST /v1/mobile/pair/start`)
 3. Refresh-token flow (`POST /v1/mobile/auth/refresh`) on startup and 401 retry
-4. Broker feed loading + quick action command dispatch
+4. Broker feed loading + quick action command dispatch (Codex-only in this phase)
 5. Health/workspace status and debug feed panel
 
 ## Run
