@@ -16,6 +16,17 @@ Current scope:
    - `API URL` (example: `http://10.0.2.2:8787` for emulator to local host)
    - `Mobile Token` (example: `dev-mobile-token`)
 
+## Run (CLI, Windows PowerShell)
+
+```powershell
+cd C:\001_dev\notifier\v3\android-app
+.\scripts\local-build.ps1
+```
+
+Build artifact:
+
+- `C:\001_dev\notifier\v3\android-app\app\build\outputs\apk\debug\app-debug.apk`
+
 ## Notes
 
 - This is a bootstrap implementation to validate end-to-end API flow.

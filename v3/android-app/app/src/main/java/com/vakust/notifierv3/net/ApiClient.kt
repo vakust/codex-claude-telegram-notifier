@@ -25,7 +25,7 @@ class ApiClient {
             FeedResponse(
                 ok = json.optBoolean("ok", false),
                 items = parseItems(items),
-                next_cursor = json.optString("next_cursor", null)
+                next_cursor = json.optString("next_cursor", "").ifBlank { null }
             )
         }
     }
