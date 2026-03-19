@@ -59,3 +59,4 @@ npm run smoke
 1. Storage is in-memory only (no persistence yet).
 2. This is a development skeleton for architecture validation.
 3. Telegram production path remains unchanged.
+4. Full local checklist: `C:\001_dev\notifier\v3\LOCAL_VALIDATION.md`.
