@@ -10,7 +10,7 @@ Current scope:
 - Connection chip with backend health status.
 - Auto-fallback between `127.0.0.1` and `10.0.2.2` local URLs.
 - Fetch mobile feed (`GET /v1/mobile/feed`).
-- Send quick commands (`POST /v1/mobile/commands`) for Codex/Cloud Code.
+- Send quick commands (`POST /v1/mobile/commands`) for Codex (continue/fix_retest/shot).
 
 ## Run (Android Studio)
 

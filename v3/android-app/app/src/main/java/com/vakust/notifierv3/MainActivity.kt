@@ -128,10 +128,21 @@ private fun NotifierScreen(vm: AppViewModel = viewModel()) {
                 modifier = Modifier.weight(1f)
             ) { Text("Codex Continue") }
             Button(
-                onClick = { vm.sendCommand("cc", "continue") },
+                onClick = { vm.sendCommand("codex", "fix_retest") },
                 enabled = !vm.isBusy,
                 modifier = Modifier.weight(1f)
-            ) { Text("CC Continue") }
+            ) { Text("Codex Fix+Retest") }
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Button(
+                onClick = { vm.sendCommand("codex", "shot") },
+                enabled = !vm.isBusy,
+                modifier = Modifier.weight(1f)
+            ) { Text("Shot Codex") }
         }
 
         Text("Status: ${vm.statusText}", style = MaterialTheme.typography.bodyMedium)
