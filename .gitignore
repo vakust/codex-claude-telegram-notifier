@@ -4,3 +4,12 @@ logs/
 dist/
 *.pid
 *.log
+node_modules/
+npm-debug.log*
+yarn-error.log*
+
+# Android local build artifacts
+v3/android-app/.gradle/
+v3/android-app/.kotlin/
+v3/android-app/local.properties
+v3/android-app/**/build/
