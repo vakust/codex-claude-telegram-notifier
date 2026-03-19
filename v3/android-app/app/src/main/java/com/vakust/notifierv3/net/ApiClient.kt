@@ -12,10 +12,25 @@ import java.net.URL
 import java.time.Instant
 
 class ApiClient {
+    fun checkHealth(baseUrl: String): Boolean {
+        val url = URL(baseUrl.trimEnd('/') + "/health")
+        val conn = (url.openConnection() as HttpURLConnection).apply {
+            requestMethod = "GET"
+            connectTimeout = 2500
+            readTimeout = 2500
+            setRequestProperty("Accept", "application/json")
+        }
+        return conn.useResponse { body ->
+            JSONObject(body).optBoolean("ok", false)
+        }
+    }
+
     fun fetchFeed(baseUrl: String, token: String, limit: Int = 30): FeedResponse {
         val url = URL(baseUrl.trimEnd('/') + "/v1/mobile/feed?limit=$limit")
         val conn = (url.openConnection() as HttpURLConnection).apply {
             requestMethod = "GET"
+            connectTimeout = 6000
+            readTimeout = 6000
             setRequestProperty("Authorization", "Bearer $token")
             setRequestProperty("Accept", "application/json")
         }
@@ -46,6 +61,8 @@ class ApiClient {
         val conn = (url.openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"
             doOutput = true
+            connectTimeout = 6000
+            readTimeout = 6000
             setRequestProperty("Authorization", "Bearer $token")
             setRequestProperty("Content-Type", "application/json")
             setRequestProperty("Accept", "application/json")
