@@ -2,18 +2,34 @@ import SwiftUI
 
 struct ContentView: View {
     @EnvironmentObject var vm: FeedViewModel
+    @State private var pairCode: String = ""
 
     var body: some View {
         NavigationStack {
             VStack(spacing: 12) {
                 GroupBox("Connection") {
-                    TextField("API URL", text: $vm.apiURL)
+                    TextField("API URL", text: Binding(
+                        get: { vm.apiURL },
+                        set: { vm.updateApiURL($0) }
+                    ))
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+
+                    TextField("Mobile Token", text: Binding(
+                        get: { vm.token },
+                        set: { vm.updateToken($0) }
+                    ))
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+
+                    TextField("Pair Code (e.g. 123-456)", text: $pairCode)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
-                    SecureField("Mobile Token", text: $vm.token)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
+
                     HStack {
+                        Button("Pair Device") {
+                            Task { await vm.pairDevice(pairCode: pairCode) }
+                        }
                         Button("Refresh") {
                             Task { await vm.refresh() }
                         }
@@ -22,6 +38,10 @@ struct ContentView: View {
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                     }
+
+                    Text("Workspace: \(vm.workspaceId.isEmpty ? "(not paired)" : vm.workspaceId)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
 
                 GroupBox("Quick Actions") {
@@ -45,7 +65,7 @@ struct ContentView: View {
 
                 List(vm.events) { event in
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("\(event.source.uppercased()) • \(event.event_type)")
+                        Text("\(event.source.uppercased()) - \(event.event_type)")
                             .font(.headline)
                         Text(event.created_at)
                             .font(.caption)
@@ -62,7 +82,7 @@ struct ContentView: View {
             .navigationTitle("Notifier v3")
         }
         .task {
-            await vm.refresh()
+            await vm.bootstrap()
         }
     }
 }
