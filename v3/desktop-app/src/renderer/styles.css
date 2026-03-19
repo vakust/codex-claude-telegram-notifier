@@ -102,6 +102,16 @@ button:hover {
   border-color: var(--accent);
 }
 
+#pairBtn {
+  margin-bottom: 8px;
+}
+
+.workspace {
+  margin: 0 0 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .actions {
   display: grid;
   gap: 8px;

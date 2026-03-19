@@ -2,7 +2,15 @@
 
 const path = require("path");
 const { app, BrowserWindow, ipcMain } = require("electron");
-const { DEFAULT_API, DEFAULT_MOBILE_TOKEN, checkHealth, getFeed, sendCommand } = require("./api-client");
+const {
+  DEFAULT_API,
+  DEFAULT_MOBILE_TOKEN,
+  checkHealth,
+  getFeed,
+  refreshSession,
+  sendCommand,
+  startPair
+} = require("./api-client");
 
 let mainWindow = null;
 
@@ -45,3 +53,5 @@ ipcMain.handle("config:get", async () => {
 ipcMain.handle("api:getFeed", async (_event, payload) => getFeed(payload));
 ipcMain.handle("api:sendCommand", async (_event, payload) => sendCommand(payload));
 ipcMain.handle("api:checkHealth", async (_event, payload) => checkHealth(payload));
+ipcMain.handle("api:startPair", async (_event, payload) => startPair(payload));
+ipcMain.handle("api:refreshSession", async (_event, payload) => refreshSession(payload));

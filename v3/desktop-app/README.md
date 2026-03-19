@@ -2,12 +2,13 @@
 
 Electron desktop shell for the API-first control center.
 
-## Scope in this commit
+## Scope in this branch
 
-1. Main window shell
-2. Broker feed loading
-3. Quick action command dispatch
-4. Minimal visual status and debug feed panel
+1. Main window shell with persisted API/mobile token
+2. Pair device flow (`POST /v1/mobile/pair/start`)
+3. Refresh-token flow (`POST /v1/mobile/auth/refresh`) on startup and 401 retry
+4. Broker feed loading + quick action command dispatch
+5. Health/workspace status and debug feed panel
 
 ## Run
 
@@ -37,3 +38,4 @@ cd C:\001_dev\notifier\v3\desktop-app
 
 1. This is a skeleton for iterative UX and reliability work.
 2. Existing Telegram flow is untouched.
+3. Token persistence is currently via localStorage (desktop app profile).

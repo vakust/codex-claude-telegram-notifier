@@ -13,6 +13,14 @@ function resolveConfig(payload) {
   };
 }
 
+async function readJsonSafe(response) {
+  try {
+    return await response.json();
+  } catch {
+    return {};
+  }
+}
+
 async function getFeed(payload) {
   const cfg = resolveConfig(payload);
   const url = new URL("/v1/mobile/feed", cfg.apiUrl);
@@ -20,7 +28,7 @@ async function getFeed(payload) {
   const response = await fetch(url.toString(), {
     headers: { Authorization: `Bearer ${cfg.token}` }
   });
-  const body = await response.json();
+  const body = await readJsonSafe(response);
   return {
     ok: response.ok,
     status: response.status,
@@ -31,7 +39,7 @@ async function getFeed(payload) {
 async function checkHealth(payload) {
   const cfg = resolveConfig(payload);
   const response = await fetch(new URL("/health", cfg.apiUrl));
-  const body = await response.json();
+  const body = await readJsonSafe(response);
   return {
     ok: response.ok && body && body.ok === true,
     status: response.status,
@@ -56,7 +64,45 @@ async function sendCommand(payload) {
       }
     })
   });
-  const body = await response.json();
+  const body = await readJsonSafe(response);
+  return {
+    ok: response.ok,
+    status: response.status,
+    body
+  };
+}
+
+async function startPair(payload) {
+  const cfg = resolveConfig(payload);
+  const response = await fetch(new URL("/v1/mobile/pair/start", cfg.apiUrl), {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      pair_code: payload && payload.pairCode ? String(payload.pairCode) : ""
+    })
+  });
+  const body = await readJsonSafe(response);
+  return {
+    ok: response.ok,
+    status: response.status,
+    body
+  };
+}
+
+async function refreshSession(payload) {
+  const cfg = resolveConfig(payload);
+  const response = await fetch(new URL("/v1/mobile/auth/refresh", cfg.apiUrl), {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      refresh_token: payload && payload.refreshToken ? String(payload.refreshToken) : ""
+    })
+  });
+  const body = await readJsonSafe(response);
   return {
     ok: response.ok,
     status: response.status,
@@ -69,5 +115,7 @@ module.exports = {
   DEFAULT_MOBILE_TOKEN,
   checkHealth,
   getFeed,
-  sendCommand
+  refreshSession,
+  sendCommand,
+  startPair
 };

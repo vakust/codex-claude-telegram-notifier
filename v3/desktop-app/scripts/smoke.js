@@ -1,13 +1,54 @@
 "use strict";
 
-const { getFeed, sendCommand, DEFAULT_API, DEFAULT_MOBILE_TOKEN } = require("../src/api-client");
+const {
+  getFeed,
+  refreshSession,
+  sendCommand,
+  startPair,
+  DEFAULT_API,
+  DEFAULT_MOBILE_TOKEN
+} = require("../src/api-client");
 
 async function run() {
   const cfg = {
     apiUrl: process.env.V3_API_URL || DEFAULT_API,
     token: process.env.V3_MOBILE_TOKEN || DEFAULT_MOBILE_TOKEN,
-    agentToken: process.env.V3_AGENT_TOKEN || "dev-agent-token"
+    agentToken: process.env.V3_AGENT_TOKEN || "dev-agent-token",
+    adminToken: process.env.V3_ADMIN_TOKEN || "dev-admin-token"
   };
+
+  const pairResponse = await fetch(new URL("/v1/admin/pair/code", cfg.apiUrl), {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${cfg.adminToken}`
+    },
+    body: JSON.stringify({
+      workspace_id: "ws_desktop_smoke"
+    })
+  });
+  const pairBody = await pairResponse.json();
+  if (!pairResponse.ok || !pairBody.pair_code) {
+    throw new Error(`pair code create failed: HTTP ${pairResponse.status} ${JSON.stringify(pairBody)}`);
+  }
+
+  const paired = await startPair({
+    apiUrl: cfg.apiUrl,
+    pairCode: pairBody.pair_code
+  });
+  if (!paired.ok || !paired.body || !paired.body.access_token || !paired.body.refresh_token) {
+    throw new Error(`startPair failed: HTTP ${paired.status} ${JSON.stringify(paired.body)}`);
+  }
+
+  const refreshed = await refreshSession({
+    apiUrl: cfg.apiUrl,
+    refreshToken: paired.body.refresh_token
+  });
+  if (!refreshed.ok || !refreshed.body || !refreshed.body.access_token) {
+    throw new Error(`refreshSession failed: HTTP ${refreshed.status} ${JSON.stringify(refreshed.body)}`);
+  }
+
+  cfg.token = refreshed.body.access_token;
 
   const before = await getFeed({ ...cfg, limit: 20 });
   if (!before.ok) {
@@ -56,6 +97,7 @@ async function run() {
       {
         ok: true,
         api: cfg.apiUrl,
+        workspace_id: paired.body.workspace_id || null,
         command_id: command.body && command.body.command_id ? command.body.command_id : null,
         event_id: eventBody && eventBody.event_id ? eventBody.event_id : null,
         feed_before: beforeCount,
