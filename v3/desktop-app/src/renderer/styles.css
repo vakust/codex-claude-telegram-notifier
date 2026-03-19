@@ -50,6 +50,29 @@ body {
   font-size: 16px;
 }
 
+.health {
+  display: inline-block;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  border: 1px solid var(--line);
+}
+
+.health.ok {
+  background: rgba(57, 217, 138, 0.15);
+  color: #9aecc4;
+}
+
+.health.err {
+  background: rgba(255, 99, 99, 0.15);
+  color: #ffb3b3;
+}
+
+.health.unknown {
+  background: rgba(139, 155, 177, 0.15);
+  color: #c2cede;
+}
+
 label {
   display: block;
   margin-bottom: 10px;

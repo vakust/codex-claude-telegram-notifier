@@ -28,6 +28,17 @@ async function getFeed(payload) {
   };
 }
 
+async function checkHealth(payload) {
+  const cfg = resolveConfig(payload);
+  const response = await fetch(new URL("/health", cfg.apiUrl));
+  const body = await response.json();
+  return {
+    ok: response.ok && body && body.ok === true,
+    status: response.status,
+    body
+  };
+}
+
 async function sendCommand(payload) {
   const cfg = resolveConfig(payload);
   const response = await fetch(new URL("/v1/mobile/commands", cfg.apiUrl), {
@@ -56,6 +67,7 @@ async function sendCommand(payload) {
 module.exports = {
   DEFAULT_API,
   DEFAULT_MOBILE_TOKEN,
+  checkHealth,
   getFeed,
   sendCommand
 };
