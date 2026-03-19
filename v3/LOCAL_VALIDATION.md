@@ -2,6 +2,19 @@
 
 This checklist validates the API-first V3 track without touching Telegram legacy flow.
 
+## One command (recommended)
+
+```powershell
+cd C:\001_dev\notifier\v3
+.\scripts\run-local-validation.ps1
+```
+
+Optional USB deploy in same run:
+
+```powershell
+.\scripts\run-local-validation.ps1 -TryAndroidDeploy
+```
+
 ## 1. Backend smoke
 
 ```powershell
