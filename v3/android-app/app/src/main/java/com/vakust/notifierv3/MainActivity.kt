@@ -46,8 +46,7 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 private fun NotifierScreen(vm: AppViewModel = viewModel()) {
-    var apiUrl by remember { mutableStateOf(vm.apiUrl) }
-    var token by remember { mutableStateOf(vm.token) }
+    var pairCode by remember { mutableStateOf("") }
 
     LaunchedEffect(Unit) {
         vm.bootstrap()
@@ -79,9 +78,8 @@ private fun NotifierScreen(vm: AppViewModel = viewModel()) {
         }
 
         OutlinedTextField(
-            value = apiUrl,
+            value = vm.apiUrl,
             onValueChange = {
-                apiUrl = it
                 vm.updateApiUrl(it)
             },
             modifier = Modifier.fillMaxWidth(),
@@ -89,14 +87,31 @@ private fun NotifierScreen(vm: AppViewModel = viewModel()) {
         )
 
         OutlinedTextField(
-            value = token,
+            value = vm.token,
             onValueChange = {
-                token = it
                 vm.updateToken(it)
             },
             modifier = Modifier.fillMaxWidth(),
             label = { Text("Mobile Token") }
         )
+
+        OutlinedTextField(
+            value = pairCode,
+            onValueChange = { pairCode = it },
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("Pair Code (e.g. 123-456)") }
+        )
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Button(
+                onClick = { vm.pairWithCode(pairCode) },
+                enabled = !vm.isBusy,
+                modifier = Modifier.weight(1f)
+            ) { Text("Pair Device") }
+        }
 
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -120,6 +135,10 @@ private fun NotifierScreen(vm: AppViewModel = viewModel()) {
         }
 
         Text("Status: ${vm.statusText}", style = MaterialTheme.typography.bodyMedium)
+        Text(
+            "Workspace: ${if (vm.workspaceId.isBlank()) "(not paired)" else vm.workspaceId}",
+            style = MaterialTheme.typography.bodySmall
+        )
 
         LazyColumn(
             modifier = Modifier.fillMaxSize(),

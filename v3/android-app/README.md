@@ -5,6 +5,8 @@ Android companion app for the API-first Notifier V3 backend.
 Current scope:
 - Configure backend URL + mobile token.
 - Persist API URL and token between app restarts.
+- Pair device with `pair_code` (`POST /v1/mobile/pair/start`) and store refresh token.
+- Auto-refresh access token (`POST /v1/mobile/auth/refresh`) after app restart / 401.
 - Connection chip with backend health status.
 - Auto-fallback between `127.0.0.1` and `10.0.2.2` local URLs.
 - Fetch mobile feed (`GET /v1/mobile/feed`).

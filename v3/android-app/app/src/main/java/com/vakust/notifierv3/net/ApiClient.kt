@@ -3,6 +3,7 @@ package com.vakust.notifierv3.net
 import com.vakust.notifierv3.model.CommandResponse
 import com.vakust.notifierv3.model.EventItem
 import com.vakust.notifierv3.model.FeedResponse
+import com.vakust.notifierv3.model.AuthSessionResponse
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedReader
@@ -42,6 +43,40 @@ class ApiClient {
                 items = parseItems(items),
                 next_cursor = json.optString("next_cursor", "").ifBlank { null }
             )
+        }
+    }
+
+    fun startPair(baseUrl: String, pairCode: String): AuthSessionResponse {
+        val url = URL(baseUrl.trimEnd('/') + "/v1/mobile/pair/start")
+        val payload = JSONObject(mapOf("pair_code" to pairCode))
+        val conn = (url.openConnection() as HttpURLConnection).apply {
+            requestMethod = "POST"
+            doOutput = true
+            connectTimeout = 6000
+            readTimeout = 6000
+            setRequestProperty("Content-Type", "application/json")
+            setRequestProperty("Accept", "application/json")
+        }
+        OutputStreamWriter(conn.outputStream, Charsets.UTF_8).use { it.write(payload.toString()) }
+        return conn.useResponse { body ->
+            parseAuthSession(JSONObject(body))
+        }
+    }
+
+    fun refreshSession(baseUrl: String, refreshToken: String): AuthSessionResponse {
+        val url = URL(baseUrl.trimEnd('/') + "/v1/mobile/auth/refresh")
+        val payload = JSONObject(mapOf("refresh_token" to refreshToken))
+        val conn = (url.openConnection() as HttpURLConnection).apply {
+            requestMethod = "POST"
+            doOutput = true
+            connectTimeout = 6000
+            readTimeout = 6000
+            setRequestProperty("Content-Type", "application/json")
+            setRequestProperty("Accept", "application/json")
+        }
+        OutputStreamWriter(conn.outputStream, Charsets.UTF_8).use { it.write(payload.toString()) }
+        return conn.useResponse { body ->
+            parseAuthSession(JSONObject(body))
         }
     }
 
@@ -96,6 +131,17 @@ class ApiClient {
             )
         }
         return out
+    }
+
+    private fun parseAuthSession(json: JSONObject): AuthSessionResponse {
+        return AuthSessionResponse(
+            ok = json.optBoolean("ok", false),
+            workspace_id = json.optString("workspace_id", ""),
+            access_token = json.optString("access_token", ""),
+            refresh_token = json.optString("refresh_token", ""),
+            access_expires_at = json.optString("access_expires_at", "").ifBlank { null },
+            refresh_expires_at = json.optString("refresh_expires_at", "").ifBlank { null }
+        )
     }
 
     private inline fun <T> HttpURLConnection.useResponse(block: (String) -> T): T {

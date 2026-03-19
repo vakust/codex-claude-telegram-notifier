@@ -19,3 +19,12 @@ data class CommandResponse(
     val command_id: String,
     val status: String
 )
+
+data class AuthSessionResponse(
+    val ok: Boolean,
+    val workspace_id: String,
+    val access_token: String,
+    val refresh_token: String,
+    val access_expires_at: String?,
+    val refresh_expires_at: String?
+)
