@@ -105,15 +105,12 @@ function Get-UiaInputPoints([IntPtr]$hWnd) {
     if (-not $root) { return $result }
     $winRect = New-Object Win32CCApi+RECT
     [Win32CCApi]::GetWindowRect($hWnd, [ref]$winRect) | Out-Null
+    $winW = [Math]::Max(1, ($winRect.Right - $winRect.Left))
+    $winH = [Math]::Max(1, ($winRect.Bottom - $winRect.Top))
     $scope = [System.Windows.Automation.TreeScope]::Descendants
 
     # Placeholder-name targeting first (fast path).
-    $fastPlaceholders = @(
-      'Reply...',
-      'Reply to Claude...',
-      'Type a message...',
-      'How can Claude help?'
-    )
+    $fastPlaceholders = $script:CCPlaceholders
     foreach ($ph in $fastPlaceholders) {
       $nameCond = New-Object System.Windows.Automation.PropertyCondition(
         [System.Windows.Automation.AutomationElement]::NameProperty, $ph)
@@ -149,6 +146,52 @@ function Get-UiaInputPoints([IntPtr]$hWnd) {
         $ay = [int][Math]::Round($ab.Y - 40.0)
         $result += [PSCustomObject]@{ x = $ax; y = $ay; source = "uia-anchor-bypass" }
         Write-Dbg "UIA anchor bypass=($ax,$ay) button=($([int]$ab.X),$([int]$ab.Y),$([int]$ab.Width)x$([int]$ab.Height))"
+        return $result
+      }
+    }
+
+    # Fallback: pick best Edit control near bottom; works when placeholder text is absent.
+    $editCond = New-Object System.Windows.Automation.PropertyCondition(
+      [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+      [System.Windows.Automation.ControlType]::Edit
+    )
+    $swEdit = [Diagnostics.Stopwatch]::StartNew()
+    $edits = $root.FindAll($scope, $editCond)
+    $swEdit.Stop()
+    Write-Dbg "UIA edit scan took $($swEdit.ElapsedMilliseconds)ms count=$($edits.Count)"
+
+    if ($edits -and $edits.Count -gt 0) {
+      $best = $null
+      $bestScore = -99999
+      for ($i = 0; $i -lt $edits.Count; $i++) {
+        $cand = $edits.Item($i)
+        try {
+          $cb = $cand.Current.BoundingRectangle
+          if ($cb.Width -le 0 -or $cb.Height -le 0) { continue }
+          if ($cb.Width -lt 120 -or $cb.Height -lt 14) { continue }
+
+          $name = [string]$cand.Current.Name
+          $class = [string]$cand.Current.ClassName
+          $score = 0
+          if ($cb.Y -ge ($winRect.Top + ($winH * 0.55))) { $score += 45 } else { $score -= 20 }
+          if ($cb.Width -ge ($winW * 0.30)) { $score += 20 }
+          if ($cb.Height -ge 18) { $score += 10 }
+          if ($name -match '(?i)(reply|message|claude|ask|chat|prompt)') { $score += 25 }
+          if ($class -eq 'xterm-helper-textarea') { $score -= 30 }
+
+          if ($score -gt $bestScore) {
+            $bestScore = $score
+            $best = $cand
+          }
+        } catch {}
+      }
+
+      if ($best) {
+        $bb = $best.Current.BoundingRectangle
+        $cx = [int][Math]::Round($bb.X + [Math]::Min(180.0, ($bb.Width * 0.6)))
+        $cy = [int][Math]::Round($bb.Y + ($bb.Height * 0.5))
+        $result += [PSCustomObject]@{ x = $cx; y = $cy; source = "uia-edit-fallback" }
+        Write-Dbg "UIA edit fallback=($cx,$cy) w=$([Math]::Round($bb.Width,1)) h=$([Math]::Round($bb.Height,1)) score=$bestScore"
         return $result
       }
     }
@@ -351,13 +394,79 @@ function Send-AsciiText([string]$text) {
   }
 }
 
+function Set-ClipboardViaSta([string]$value) {
+  if ($null -eq $value) { $value = '' }
+  $id = [Guid]::NewGuid().ToString('N')
+  $tmpPath = Join-Path $env:TEMP ("notifier-clip-" + $id + ".txt")
+  $tmpScript = Join-Path $env:TEMP ("notifier-clip-" + $id + ".ps1")
+  $scriptBody = @'
+param([string]$Path)
+try {
+  $v = [System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8)
+  Set-Clipboard -Value $v
+  $c = Get-Clipboard -Raw
+  if ($c -eq $v) { exit 0 }
+  exit 5
+} catch {
+  exit 2
+}
+'@
+  try {
+    [System.IO.File]::WriteAllText($tmpPath, $value, [System.Text.Encoding]::UTF8)
+    [System.IO.File]::WriteAllText($tmpScript, $scriptBody, [System.Text.Encoding]::UTF8)
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -File $tmpScript -Path $tmpPath | Out-Null
+    return ($LASTEXITCODE -eq 0)
+  } catch {
+    Write-Dbg "STA clipboard helper failed: $($_.Exception.Message)"
+    return $false
+  } finally {
+    Remove-Item $tmpPath -Force -ErrorAction SilentlyContinue
+    Remove-Item $tmpScript -Force -ErrorAction SilentlyContinue
+  }
+}
+
+function Set-ClipboardSafe([string]$value, [int]$retries = 4, [int]$pauseMs = 90) {
+  if ($null -eq $value) { $value = '' }
+  $isStaThread = ([System.Threading.Thread]::CurrentThread.GetApartmentState() -eq [System.Threading.ApartmentState]::STA)
+  for ($i = 1; $i -le $retries; $i++) {
+    if ($isStaThread) {
+      try {
+        Set-Clipboard -Value $value
+        Start-Sleep -Milliseconds $pauseMs
+        $actual = ''
+        try { $actual = [string](Get-Clipboard -Raw) } catch {}
+        if ($actual -eq $value) {
+          Write-Dbg "Clipboard verified attempt=$i len=$($value.Length)"
+          return $true
+        }
+        $actualLen = if ($null -eq $actual) { 0 } else { $actual.Length }
+        Write-Dbg "Clipboard mismatch attempt=$i expectedLen=$($value.Length) actualLen=$actualLen"
+      } catch {
+        Write-Dbg "Clipboard set failed attempt=${i}: $($_.Exception.Message)"
+      }
+    } else {
+      $ok = Set-ClipboardViaSta -value $value
+      if ($ok) {
+        Write-Dbg "Clipboard verified via STA helper attempt=$i len=$($value.Length)"
+        return $true
+      }
+      Write-Dbg "Clipboard STA helper failed attempt=$i len=$($value.Length)"
+    }
+    Start-Sleep -Milliseconds $pauseMs
+  }
+  return $false
+}
+
 function Try-SendAt([IntPtr]$hWnd, [int]$x, [int]$y, [string]$text, [string]$sessionPath, [int64]$beforeBytes, [string]$probe, [datetime]$startedAt) {
   if (Runtime-Exceeded $startedAt) { return $false }
   if (-not (Ensure-WindowForeground $hWnd 2)) {
     Write-Dbg "Focus not confirmed at x=$x y=$y, continuing"
   }
   Click-At $x $y
-  try { Set-Clipboard -Value $text } catch { Write-Dbg "Clipboard failed: $($_.Exception.Message)" }
+  if (-not (Set-ClipboardSafe -value $text)) {
+    Write-Dbg "Clipboard unavailable at x=$x y=$y; skipping send to avoid stale clipboard text"
+    return $false
+  }
 
   # UIA-driven send: keep it simple and deterministic.
   # No Shift+Insert / no direct type fallback for Cloud Code.

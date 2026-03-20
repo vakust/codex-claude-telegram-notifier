@@ -474,6 +474,69 @@ function Send-AsciiText([string]$text) {
   }
 }
 
+function Set-ClipboardViaSta([string]$value) {
+  if ($null -eq $value) { $value = '' }
+  $id = [Guid]::NewGuid().ToString('N')
+  $tmpPath = Join-Path $env:TEMP ("notifier-clip-" + $id + ".txt")
+  $tmpScript = Join-Path $env:TEMP ("notifier-clip-" + $id + ".ps1")
+  $scriptBody = @'
+param([string]$Path)
+try {
+  $v = [System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8)
+  Set-Clipboard -Value $v
+  $c = Get-Clipboard -Raw
+  if ($c -eq $v) { exit 0 }
+  exit 5
+} catch {
+  exit 2
+}
+'@
+  try {
+    [System.IO.File]::WriteAllText($tmpPath, $value, [System.Text.Encoding]::UTF8)
+    [System.IO.File]::WriteAllText($tmpScript, $scriptBody, [System.Text.Encoding]::UTF8)
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -File $tmpScript -Path $tmpPath | Out-Null
+    return ($LASTEXITCODE -eq 0)
+  } catch {
+    Write-Dbg "STA clipboard helper failed: $($_.Exception.Message)"
+    return $false
+  } finally {
+    Remove-Item $tmpPath -Force -ErrorAction SilentlyContinue
+    Remove-Item $tmpScript -Force -ErrorAction SilentlyContinue
+  }
+}
+
+function Set-ClipboardSafe([string]$value, [int]$retries = 4, [int]$pauseMs = 90) {
+  if ($null -eq $value) { $value = '' }
+  $isStaThread = ([System.Threading.Thread]::CurrentThread.GetApartmentState() -eq [System.Threading.ApartmentState]::STA)
+  for ($i = 1; $i -le $retries; $i++) {
+    if ($isStaThread) {
+      try {
+        Set-Clipboard -Value $value
+        Start-Sleep -Milliseconds $pauseMs
+        $actual = ''
+        try { $actual = [string](Get-Clipboard -Raw) } catch {}
+        if ($actual -eq $value) {
+          Write-Dbg "Clipboard verified attempt=$i len=$($value.Length)"
+          return $true
+        }
+        $actualLen = if ($null -eq $actual) { 0 } else { $actual.Length }
+        Write-Dbg "Clipboard mismatch attempt=$i expectedLen=$($value.Length) actualLen=$actualLen"
+      } catch {
+        Write-Dbg "Clipboard set failed attempt=${i}: $($_.Exception.Message)"
+      }
+    } else {
+      $ok = Set-ClipboardViaSta -value $value
+      if ($ok) {
+        Write-Dbg "Clipboard verified via STA helper attempt=$i len=$($value.Length)"
+        return $true
+      }
+      Write-Dbg "Clipboard STA helper failed attempt=$i len=$($value.Length)"
+    }
+    Start-Sleep -Milliseconds $pauseMs
+  }
+  return $false
+}
+
 function Try-SendAt([IntPtr]$hWnd, [int]$x, [int]$y, [string]$text, [string]$sessionPath, [int64]$beforeBytes, [string]$probe, [datetime]$startedAt) {
   if (Runtime-Exceeded -startedAt $startedAt) { return $false }
   if (-not (Ensure-WindowForeground -hWnd $hWnd -maxTries 2)) {
@@ -483,11 +546,9 @@ function Try-SendAt([IntPtr]$hWnd, [int]$x, [int]$y, [string]$text, [string]$ses
   Write-Dbg "Try-SendAt focus check: fg=$fgNow target=$hWnd"
 
   Click-At -x $x -y $y
-  try {
-    Set-Clipboard -Value $text
-    Write-Dbg 'Clipboard set OK'
-  } catch {
-    Write-Dbg "Clipboard set failed: $($_.Exception.Message)"
+  if (-not (Set-ClipboardSafe -value $text)) {
+    Write-Dbg "Clipboard unavailable for attempt x=$x y=$y; skipping paste send to avoid stale clipboard text"
+    return $false
   }
 
   # Method 1: Shift+Insert
@@ -638,23 +699,26 @@ if ($Action -eq 'send_continue') {
   # Attempt 0: no-click paste (works if input field is already focused from last session)
   Write-Dbg "Attempt 0: no-click (Esc + CtrlA + CtrlV + Enter)"
   if (-not (Runtime-Exceeded -startedAt $startedAt)) {
-    try { Set-Clipboard -Value $sendText } catch {}
-    Press-Key -vk 0x1B          # Escape - dismiss any modal
-    Start-Sleep -Milliseconds 200
-    Send-CtrlA                  # Select all in input
-    Start-Sleep -Milliseconds 80
-    Send-CtrlV                  # Paste
-    Start-Sleep -Milliseconds 250
-    Press-Key -vk 0x0D          # Enter
-    Start-Sleep -Milliseconds $WaitAfterSendMs
-    if (Wait-ForUserDelivery -sessionPath $sessionPath -beforeBytes $beforeBytes -probe $probe) {
-      try { if ($oldClipboard) { Set-Clipboard -Value $oldClipboard } } catch {}
-      Write-Dbg "SUCCESS no-click"
-      Release-SendLock
-      Write-Output "SENT attempt=0 source=no-click delivered=1"
-      exit 0
+    if (Set-ClipboardSafe -value $sendText) {
+      Press-Key -vk 0x1B          # Escape - dismiss any modal
+      Start-Sleep -Milliseconds 200
+      Send-CtrlA                  # Select all in input
+      Start-Sleep -Milliseconds 80
+      Send-CtrlV                  # Paste
+      Start-Sleep -Milliseconds 250
+      Press-Key -vk 0x0D          # Enter
+      Start-Sleep -Milliseconds $WaitAfterSendMs
+      if (Wait-ForUserDelivery -sessionPath $sessionPath -beforeBytes $beforeBytes -probe $probe) {
+        try { if ($oldClipboard) { Set-Clipboard -Value $oldClipboard } } catch {}
+        Write-Dbg "SUCCESS no-click"
+        Release-SendLock
+        Write-Output "SENT attempt=0 source=no-click delivered=1"
+        exit 0
+      }
+      Write-Dbg "No-click failed, trying coordinate-based"
+    } else {
+      Write-Dbg "Attempt 0 skipped: clipboard unavailable"
     }
-    Write-Dbg "No-click failed, trying coordinate-based"
   }
 
   $saved = Load-Point
@@ -772,7 +836,10 @@ if ($Action -eq 'send_continue') {
     if ($pt.source -match 'uia-composer') {
       Ensure-WindowForeground -hWnd $p.MainWindowHandle -maxTries 2 | Out-Null
       Click-At -x $x -y $y
-      try { Set-Clipboard -Value $sendText } catch {}
+      if (-not (Set-ClipboardSafe -value $sendText)) {
+        Write-Dbg "UIA attempt skipped: clipboard unavailable source=$($pt.source)"
+        continue
+      }
       Start-Sleep -Milliseconds 120
       Send-CtrlV
       Start-Sleep -Milliseconds 250
