@@ -130,7 +130,7 @@ struct FeedEvent: Codable, Identifiable {
                 if let stringValue = value.stringValue {
                     return "\(key)=\(stringValue)"
                 }
-                return "\(key)=…"
+                return "\(key)=..."
             }
         return pairs.joined(separator: " | ")
     }

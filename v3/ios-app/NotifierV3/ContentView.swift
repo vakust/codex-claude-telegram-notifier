@@ -129,6 +129,31 @@ struct ContentView: View {
             .buttonStyle(.borderedProminent)
             .controlSize(.small)
             .disabled(vm.isBusy)
+
+            Menu {
+                Button("Check Backend") {
+                    Task { await vm.checkHealth() }
+                }
+
+                Button(vm.notificationsEnabled ? "Disable Notifications" : "Enable Notifications") {
+                    vm.updateNotificationsEnabled(!vm.notificationsEnabled)
+                }
+
+                Button(vm.soundEnabled ? "Sound: On (tap to mute)" : "Sound: Off (tap for sound)") {
+                    vm.updateSoundEnabled(!vm.soundEnabled)
+                }
+
+                Button("Request Notification Permission") {
+                    Task { await vm.requestNotificationPermission() }
+                }
+
+                Button("Test Notification") {
+                    Task { await vm.sendTestNotification() }
+                }
+            } label: {
+                Image(systemName: "ellipsis.circle")
+                    .font(.title3)
+            }
         }
     }
 
@@ -289,6 +314,9 @@ struct ContentView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Text("Status: \(vm.statusText)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text("Notifications: \(vm.notificationsEnabled ? "On" : "Off"), Sound: \(vm.soundEnabled ? "On" : "Off"), Permission: \(vm.notificationsAuthorized ? "Granted" : "Missing")")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

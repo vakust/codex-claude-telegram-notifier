@@ -15,6 +15,10 @@ SwiftUI companion app skeleton for API-first Notifier v3.
    - `continue`, `fix_retest`, `shot`, `last_text` for Codex and Cloud Code
    - per-target `custom` prompt send (`metadata.custom_text`)
 9. Fullscreen screenshot gestures: pinch-to-zoom, pan, double-tap reset
+10. Local in-app notifications parity:
+   - notification permission request
+   - notification + sound toggles
+   - test local notification action
 
 ## Structure
 
