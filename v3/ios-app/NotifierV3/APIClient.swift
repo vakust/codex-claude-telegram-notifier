@@ -34,7 +34,13 @@ final class APIClient {
         return try JSONDecoder().decode(FeedResponse.self, from: data)
     }
 
-    func sendCommand(baseURL: String, token: String, target: String, action: String) async throws -> CommandResponse {
+    func sendCommand(
+        baseURL: String,
+        token: String,
+        target: String,
+        action: String,
+        customText: String? = nil
+    ) async throws -> CommandResponse {
         guard let url = URL(string: "/v1/mobile/commands", relativeTo: URL(string: baseURL)) else {
             throw APIError.badURL
         }
@@ -44,13 +50,18 @@ final class APIClient {
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
 
+        var metadata: [String: Any] = [
+            "client": "ios-app",
+            "ts": ISO8601DateFormatter().string(from: Date())
+        ]
+        if let customText, !customText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            metadata["custom_text"] = customText
+        }
+
         let body: [String: Any] = [
             "target": target,
             "action": action,
-            "metadata": [
-                "client": "ios-app",
-                "ts": ISO8601DateFormatter().string(from: Date())
-            ]
+            "metadata": metadata
         ]
         req.httpBody = try JSONSerialization.data(withJSONObject: body)
 

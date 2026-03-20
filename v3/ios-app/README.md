@@ -11,6 +11,10 @@ SwiftUI companion app skeleton for API-first Notifier v3.
 5. Polling feed updates in background while app is active
 6. Tab-based UX (`Codex` / `Cloud Code` / `All`) with action grouping
 7. Event cards with screenshot preview + fullscreen open
+8. Command parity with Android core flow:
+   - `continue`, `fix_retest`, `shot`, `last_text` for Codex and Cloud Code
+   - per-target `custom` prompt send (`metadata.custom_text`)
+9. Fullscreen screenshot gestures: pinch-to-zoom, pan, double-tap reset
 
 ## Structure
 

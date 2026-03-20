@@ -56,7 +56,7 @@ final class FeedViewModel: ObservableObject {
         }
     }
 
-    func send(target: String, action: String) async {
+    func send(target: String, action: String, customText: String? = nil) async {
         isBusy = true
         statusText = "Sending \(target):\(action)..."
         do {
@@ -65,7 +65,8 @@ final class FeedViewModel: ObservableObject {
                     baseURL: apiURL,
                     token: token,
                     target: target,
-                    action: action
+                    action: action,
+                    customText: customText
                 )
             }
             statusText = "Accepted: \(response.command_id ?? "n/a")"
