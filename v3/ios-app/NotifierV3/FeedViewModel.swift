@@ -6,10 +6,12 @@ final class FeedViewModel: ObservableObject {
     @Published var token: String
     @Published var workspaceId: String
     @Published var statusText: String = "Idle"
+    @Published var isBusy: Bool = false
     @Published var events: [FeedEvent] = []
 
     private var refreshToken: String
     private let defaults: UserDefaults
+    private var pollingTask: Task<Void, Never>?
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -28,22 +30,34 @@ final class FeedViewModel: ObservableObject {
         }
         _ = await refreshAccessIfPossible()
         await refresh()
+        ensurePolling()
     }
 
-    func refresh() async {
-        statusText = "Loading feed..."
+    func refresh(silent: Bool = false) async {
+        if !silent {
+            isBusy = true
+            statusText = "Loading feed..."
+        }
         do {
             let response = try await runWithAccessRetry {
                 try await APIClient.shared.fetchFeed(baseURL: apiURL, token: token, limit: 30)
             }
-            events = response.items.reversed()
-            statusText = "Feed: \(events.count) item(s)"
+            events = Array(response.items.reversed())
+            if !silent {
+                statusText = "Feed: \(events.count) item(s)"
+            }
         } catch {
-            statusText = "Feed error: \(error.localizedDescription)"
+            if !silent {
+                statusText = "Feed error: \(error.localizedDescription)"
+            }
+        }
+        if !silent {
+            isBusy = false
         }
     }
 
     func send(target: String, action: String) async {
+        isBusy = true
         statusText = "Sending \(target):\(action)..."
         do {
             let response = try await runWithAccessRetry {
@@ -55,10 +69,11 @@ final class FeedViewModel: ObservableObject {
                 )
             }
             statusText = "Accepted: \(response.command_id ?? "n/a")"
-            await refresh()
+            await refresh(silent: true)
         } catch {
             statusText = "Command error: \(error.localizedDescription)"
         }
+        isBusy = false
     }
 
     func pairDevice(pairCode: String) async {
@@ -69,10 +84,12 @@ final class FeedViewModel: ObservableObject {
         }
 
         statusText = "Pairing device..."
+        isBusy = true
         do {
             let session = try await APIClient.shared.startPair(baseURL: apiURL, pairCode: code)
             guard session.ok, let access = session.access_token, !access.isEmpty else {
                 statusText = "Pair failed: invalid session."
+                isBusy = false
                 return
             }
             token = access
@@ -80,10 +97,11 @@ final class FeedViewModel: ObservableObject {
             workspaceId = session.workspace_id ?? ""
             persistSettings()
             statusText = "Paired with workspace: \(workspaceId)"
-            await refresh()
+            await refresh(silent: true)
         } catch {
             statusText = "Pair failed: \(error.localizedDescription)"
         }
+        isBusy = false
     }
 
     func updateApiURL(_ value: String) {
@@ -128,6 +146,23 @@ final class FeedViewModel: ObservableObject {
         defaults.set(token, forKey: Self.keyToken)
         defaults.set(refreshToken, forKey: Self.keyRefreshToken)
         defaults.set(workspaceId, forKey: Self.keyWorkspaceId)
+    }
+
+    private func ensurePolling() {
+        guard pollingTask == nil else { return }
+        pollingTask = Task { [weak self] in
+            guard let self else { return }
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 3_500_000_000)
+                if !self.token.isEmpty {
+                    await self.refresh(silent: true)
+                }
+            }
+        }
+    }
+
+    deinit {
+        pollingTask?.cancel()
     }
 
     private static let keyApiURL = "v3.api_url"
