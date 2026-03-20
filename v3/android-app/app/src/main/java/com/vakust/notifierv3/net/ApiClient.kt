@@ -80,16 +80,26 @@ class ApiClient {
         }
     }
 
-    fun sendCommand(baseUrl: String, token: String, target: String, action: String): CommandResponse {
+    fun sendCommand(
+        baseUrl: String,
+        token: String,
+        target: String,
+        action: String,
+        metadata: Map<String, Any?> = emptyMap()
+    ): CommandResponse {
         val url = URL(baseUrl.trimEnd('/') + "/v1/mobile/commands")
+        val meta = mutableMapOf<String, Any?>(
+            "client" to "android-app",
+            "ts" to Instant.now().toString()
+        )
+        metadata.forEach { (k, v) ->
+            if (v != null) meta[k] = v
+        }
         val payload = JSONObject(
             mapOf(
                 "target" to target,
                 "action" to action,
-                "metadata" to mapOf(
-                    "client" to "android-app",
-                    "ts" to Instant.now().toString()
-                )
+                "metadata" to meta
             )
         )
 
@@ -120,17 +130,34 @@ class ApiClient {
             val obj = raw.optJSONObject(i) ?: continue
             val payload = obj.optJSONObject("payload") ?: JSONObject()
             val payloadMap = mutableMapOf<String, Any?>()
-            payload.keys().forEach { key -> payloadMap[key] = payload.opt(key) }
+            payload.keys().forEach { key -> payloadMap[key] = jsonToAny(payload.opt(key)) }
 
             out += EventItem(
                 event_id = obj.optString("event_id", ""),
-                ts = obj.optString("ts", ""),
+                ts = obj.optString("created_at", obj.optString("ts", "")),
                 source = obj.optString("source", ""),
-                type = obj.optString("type", ""),
+                type = obj.optString("event_type", obj.optString("type", "unknown")),
                 payload = payloadMap
             )
         }
         return out
+    }
+
+    private fun jsonToAny(value: Any?): Any? {
+        return when (value) {
+            is JSONObject -> {
+                val map = mutableMapOf<String, Any?>()
+                value.keys().forEach { key -> map[key] = jsonToAny(value.opt(key)) }
+                map
+            }
+            is JSONArray -> {
+                buildList {
+                    for (i in 0 until value.length()) add(jsonToAny(value.opt(i)))
+                }
+            }
+            JSONObject.NULL -> null
+            else -> value
+        }
     }
 
     private fun parseAuthSession(json: JSONObject): AuthSessionResponse {

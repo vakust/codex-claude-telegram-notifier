@@ -9,12 +9,16 @@ import androidx.lifecycle.viewModelScope
 import com.vakust.notifierv3.model.EventItem
 import com.vakust.notifierv3.net.ApiClient
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val api = ApiClient()
     private val settings = SettingsStore(application.applicationContext)
+    private val notifier = EventNotifier(application.applicationContext)
 
     var apiUrl by mutableStateOf(settings.getApiUrl(DEFAULT_API_URL))
         private set
@@ -30,6 +34,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         private set
     var events by mutableStateOf<List<EventItem>>(emptyList())
         private set
+    var notificationsEnabled by mutableStateOf(settings.getNotificationsEnabled(true))
+        private set
+    var soundEnabled by mutableStateOf(settings.getSoundEnabled(true))
+        private set
+    var notificationsPermissionGranted by mutableStateOf(notifier.notificationsPermissionGranted())
+        private set
+    private var pollingJob: Job? = null
+    private var feedPrimed = false
+    private val seenEventKeys = LinkedHashSet<String>()
 
     fun bootstrap() {
         viewModelScope.launch {
@@ -41,8 +54,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             runCatching { refreshAccessTokenIfPossible() }.onFailure {
                 // Keep going with current token / manual mode.
             }
+            refreshNotificationPermissionState()
             checkConnection()
-            refreshFeed()
+            refreshFeedInternal(background = false)
+            ensurePolling()
         }
     }
 
@@ -110,42 +125,169 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun refreshFeed() {
+    fun refreshFeed(background: Boolean = false) {
         viewModelScope.launch {
-            isBusy = true
-            runCatching {
-                runWithAccessRetry { currentToken ->
-                    withContext(Dispatchers.IO) { api.fetchFeed(apiUrl, currentToken, 20) }
-                }
-            }.onSuccess { feed ->
-                events = feed.items
-                connectionState = ConnectionState.CONNECTED
-                statusText = "Feed loaded: ${feed.items.size}"
-            }.onFailure { err ->
-                connectionState = ConnectionState.ERROR
-                statusText = "Feed failed: ${err.message}"
-            }
-            isBusy = false
+            refreshFeedInternal(background = background)
         }
     }
 
-    fun sendCommand(target: String, action: String) {
+    fun sendCommand(target: String, action: String, customText: String? = null) {
         viewModelScope.launch {
             isBusy = true
             runCatching {
+                val metadata = mutableMapOf<String, Any?>()
+                if (!customText.isNullOrBlank()) {
+                    metadata["custom_text"] = customText
+                }
                 runWithAccessRetry { currentToken ->
-                    withContext(Dispatchers.IO) { api.sendCommand(apiUrl, currentToken, target, action) }
+                    withContext(Dispatchers.IO) { api.sendCommand(apiUrl, currentToken, target, action, metadata) }
                 }
             }.onSuccess { resp ->
                 connectionState = ConnectionState.CONNECTED
                 statusText = "Accepted: ${resp.command_id}"
-                refreshFeed()
+                refreshFeedInternal(background = true)
             }.onFailure { err ->
                 connectionState = ConnectionState.ERROR
                 statusText = "Command failed: ${err.message}"
             }
             isBusy = false
         }
+    }
+
+    fun updateNotificationsEnabled(value: Boolean) {
+        notificationsEnabled = value
+        settings.setNotificationsEnabled(value)
+    }
+
+    fun updateSoundEnabled(value: Boolean) {
+        soundEnabled = value
+        settings.setSoundEnabled(value)
+    }
+
+    fun refreshNotificationPermissionState() {
+        notificationsPermissionGranted = notifier.notificationsPermissionGranted()
+    }
+
+    fun onNotificationPermissionResult(granted: Boolean) {
+        notificationsPermissionGranted = granted
+        statusText = if (granted) "Notification permission granted." else "Notification permission denied."
+    }
+
+    fun sendTestNotification() {
+        if (!notificationsEnabled) {
+            statusText = "Notifications are disabled."
+            return
+        }
+        refreshNotificationPermissionState()
+        if (!notificationsPermissionGranted) {
+            statusText = "Grant notification permission first."
+            return
+        }
+        val item = EventItem(
+            event_id = "local-test-${System.currentTimeMillis()}",
+            ts = java.time.Instant.now().toString(),
+            source = "codex",
+            type = "done",
+            payload = mapOf("text" to "Test notification from Notifier V3")
+        )
+        notifier.postEventNotification(item, soundEnabled)
+        statusText = if (soundEnabled) {
+            "Test notification sent (sound ON)."
+        } else {
+            "Test notification sent (sound OFF)."
+        }
+    }
+
+    private suspend fun refreshFeedInternal(background: Boolean) {
+        if (!background) isBusy = true
+        runCatching {
+            runWithAccessRetry { currentToken ->
+                withContext(Dispatchers.IO) { api.fetchFeed(apiUrl, currentToken, 20) }
+            }
+        }.onSuccess { feed ->
+            handleEventNotifications(feed.items)
+            events = feed.items
+            connectionState = ConnectionState.CONNECTED
+            if (!background) {
+                statusText = "Feed loaded: ${feed.items.size}"
+            }
+        }.onFailure { err ->
+            connectionState = ConnectionState.ERROR
+            if (!background) {
+                statusText = "Feed failed: ${err.message}"
+            }
+        }
+        if (!background) isBusy = false
+    }
+
+    private fun handleEventNotifications(items: List<EventItem>) {
+        if (items.isEmpty()) return
+
+        if (!feedPrimed) {
+            items.forEach { seenEventKeys += eventKey(it) }
+            trimSeenEventKeys()
+            feedPrimed = true
+            persistNewestEventId(items)
+            return
+        }
+
+        val fresh = items.filter { item -> seenEventKeys.contains(eventKey(item)).not() }
+        if (fresh.isEmpty()) {
+            persistNewestEventId(items)
+            return
+        }
+
+        fresh.forEach { seenEventKeys += eventKey(it) }
+        trimSeenEventKeys()
+        persistNewestEventId(items)
+
+        if (!notificationsEnabled) return
+        refreshNotificationPermissionState()
+        if (!notificationsPermissionGranted) return
+
+        fresh
+            .filter { shouldNotify(it) }
+            .forEach { notifier.postEventNotification(it, soundEnabled) }
+    }
+
+    private fun shouldNotify(item: EventItem): Boolean {
+        return when (item.type.lowercase()) {
+            "done", "last_text", "command_failed" -> true
+            else -> false
+        }
+    }
+
+    private fun eventKey(item: EventItem): String {
+        return if (item.event_id.isNotBlank()) item.event_id else "${item.ts}|${item.source}|${item.type}"
+    }
+
+    private fun trimSeenEventKeys(maxSize: Int = 500) {
+        while (seenEventKeys.size > maxSize) {
+            val first = seenEventKeys.firstOrNull() ?: return
+            seenEventKeys.remove(first)
+        }
+    }
+
+    private fun persistNewestEventId(items: List<EventItem>) {
+        val newest = items.lastOrNull()?.event_id?.takeIf { it.isNotBlank() } ?: return
+        settings.setLastSeenEventId(newest)
+    }
+
+    private fun ensurePolling() {
+        if (pollingJob?.isActive == true) return
+        pollingJob = viewModelScope.launch {
+            while (isActive) {
+                delay(3500)
+                if (token.isNotBlank()) {
+                    refreshFeedInternal(background = true)
+                }
+            }
+        }
+    }
+
+    override fun onCleared() {
+        pollingJob?.cancel()
+        super.onCleared()
     }
 
     private suspend fun <T> runWithAccessRetry(block: suspend (String) -> T): T {
